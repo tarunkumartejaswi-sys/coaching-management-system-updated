@@ -17,6 +17,10 @@ import db, {
   getFeeByStudentId,
   getCurrentMonthFee,
   getStudentFeeHistory,
+  getHomework,
+  addHomework,
+  updateHomework,
+  deleteHomework,
   ensureCurrentMonthFee,
   recordFeePayment,
   syncStudentFeeDue,
@@ -71,6 +75,20 @@ type Fee = {
   paymentHistory?: Payment[];
 };
 
+type Homework = {
+  id?: string;
+  className?: string;
+  batch?: string;
+  subject?: string;
+  title?: string;
+  description?: string;
+  homeworkDate?: string;
+  dueDate?: string;
+  day?: string;
+  year?: number;
+  createdAt?: string;
+};
+
 /* =========================================================
    APP
 ========================================================= */
@@ -120,6 +138,32 @@ export default function App() {
     null
   );
   const [selectedFeeHistory, setSelectedFeeHistory] = useState<Fee[]>([]);
+
+  /* =========================================================
+     HOMEWORK
+  ========================================================= */
+
+  const [homework, setHomework] = useState<Homework[]>([]);
+  const [homeworkLoading, setHomeworkLoading] = useState(false);
+  const [homeworkMessage, setHomeworkMessage] = useState("");
+  const [showHomeworkForm, setShowHomeworkForm] = useState(false);
+  const [editingHomework, setEditingHomework] = useState<Homework | null>(null);
+  const [homeworkClass, setHomeworkClass] = useState("");
+  const [homeworkBatch, setHomeworkBatch] = useState("");
+  const [homeworkSubject, setHomeworkSubject] = useState("");
+  const [homeworkTitle, setHomeworkTitle] = useState("");
+  const [homeworkDescription, setHomeworkDescription] = useState("");
+  const [homeworkDate, setHomeworkDate] = useState("");
+  const [homeworkDueDate, setHomeworkDueDate] = useState("");
+  const [savingHomework, setSavingHomework] = useState(false);
+
+  /* Admin-only direct Firebase Auth credential change */
+  const [showCredentialForm, setShowCredentialForm] = useState(false);
+  const [credentialStudent, setCredentialStudent] = useState<Student | null>(null);
+  const [newStudentEmail, setNewStudentEmail] = useState("");
+  const [newStudentPassword, setNewStudentPassword] = useState("");
+  const [savingCredentials, setSavingCredentials] = useState(false);
+  const [credentialMessage, setCredentialMessage] = useState("");
 
   /* =========================================================
      EDIT MONTHLY FEE FROM FEES PAGE
@@ -456,6 +500,7 @@ export default function App() {
           );
 
           setStudentFeeHistory(ownFeeHistory);
+          setHomework(await getHomework());
         } else {
           const allStudents = await getStudents();
 
@@ -656,6 +701,194 @@ export default function App() {
       );
     }
   };
+
+  const openCredentialForm = (student: Student) => {
+    if (!isAdmin) return;
+    setCredentialStudent(student);
+    setNewStudentEmail(student.email || "");
+    setNewStudentPassword("");
+    setCredentialMessage("");
+    setShowCredentialForm(true);
+  };
+
+  const saveStudentCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isAdmin || !credentialStudent?.authUid) {
+      setCredentialMessage("Only the admin can change student login credentials.");
+      return;
+    }
+
+    if (newStudentPassword && newStudentPassword.length < 6) {
+      setCredentialMessage("Password must contain at least 6 characters.");
+      return;
+    }
+
+    if (!newStudentEmail.trim() && !newStudentPassword) {
+      setCredentialMessage("Enter a new email, password, or both.");
+      return;
+    }
+
+    setSavingCredentials(true);
+    setCredentialMessage("");
+
+    try {
+      const idToken = await user.getIdToken(true);
+      const response = await fetch("/api/admin-student-account", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          studentAuthUid: credentialStudent.authUid,
+          email: newStudentEmail.trim() || undefined,
+          password: newStudentPassword || undefined,
+        }),
+      });
+
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result?.error || "Unable to change student credentials.");
+      }
+
+      const updatedStudents = await getStudents();
+      setStudents(updatedStudents);
+      setCredentialMessage("Student login credentials updated successfully! ✅");
+      setNewStudentPassword("");
+      setTimeout(() => {
+        setShowCredentialForm(false);
+        setCredentialStudent(null);
+        setCredentialMessage("");
+      }, 900);
+    } catch (error: any) {
+      console.error("Credential update error:", error);
+      setCredentialMessage(
+        error?.message || "Unable to change student login credentials."
+      );
+    } finally {
+      setSavingCredentials(false);
+    }
+  };
+
+  const loadHomework = async () => {
+    setHomeworkLoading(true);
+    setHomeworkMessage("");
+    try {
+      setHomework(await getHomework());
+    } catch (error: any) {
+      console.error("Homework loading error:", error);
+      setHomeworkMessage(
+        `Firebase Error: ${error?.code || "unknown-error"} | ${
+          error?.message || "Unable to load homework"
+        }`
+      );
+    } finally {
+      setHomeworkLoading(false);
+    }
+  };
+
+  const resetHomeworkForm = () => {
+    setShowHomeworkForm(false);
+    setEditingHomework(null);
+    setHomeworkClass("");
+    setHomeworkBatch("");
+    setHomeworkSubject("");
+    setHomeworkTitle("");
+    setHomeworkDescription("");
+    setHomeworkDate("");
+    setHomeworkDueDate("");
+  };
+
+  const openAddHomework = () => {
+    if (!isAdmin) return;
+    resetHomeworkForm();
+    setHomeworkDate(new Date().toISOString().slice(0, 10));
+    setShowHomeworkForm(true);
+  };
+
+  const openEditHomework = (item: Homework) => {
+    if (!isAdmin) return;
+    setEditingHomework(item);
+    setHomeworkClass(item.className || "");
+    setHomeworkBatch(item.batch || "");
+    setHomeworkSubject(item.subject || "");
+    setHomeworkTitle(item.title || "");
+    setHomeworkDescription(item.description || "");
+    setHomeworkDate(item.homeworkDate || "");
+    setHomeworkDueDate(item.dueDate || "");
+    setHomeworkMessage("");
+    setShowHomeworkForm(true);
+  };
+
+  const saveHomework = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isAdmin) {
+      setHomeworkMessage("Only the admin can manage homework.");
+      return;
+    }
+    if (!homeworkClass || !homeworkTitle.trim() || !homeworkDescription.trim() || !homeworkDate) {
+      setHomeworkMessage("Select a class and enter title, homework and date.");
+      return;
+    }
+
+    const selectedDate = new Date(`${homeworkDate}T12:00:00`);
+    const payload = {
+      className: homeworkClass,
+      batch: homeworkBatch.trim(),
+      subject: homeworkSubject.trim(),
+      title: homeworkTitle.trim(),
+      description: homeworkDescription.trim(),
+      homeworkDate,
+      dueDate: homeworkDueDate || "",
+      day: selectedDate.toLocaleDateString("en-IN", { weekday: "long" }),
+      year: selectedDate.getFullYear(),
+      createdBy: profile?.name || "Admin",
+    };
+
+    setSavingHomework(true);
+    setHomeworkMessage("");
+    try {
+      if (editingHomework?.id) {
+        await updateHomework(editingHomework.id, payload);
+        setHomeworkMessage("Homework updated successfully! ✅");
+      } else {
+        await addHomework(payload);
+        setHomeworkMessage("Homework added successfully! ✅");
+      }
+      await loadHomework();
+      resetHomeworkForm();
+    } catch (error: any) {
+      console.error("Homework save error:", error);
+      setHomeworkMessage(
+        `Firebase Error: ${error?.code || "unknown-error"} | ${
+          error?.message || "Unable to save homework"
+        }`
+      );
+    } finally {
+      setSavingHomework(false);
+    }
+  };
+
+  const removeHomework = async (item: Homework) => {
+    if (!isAdmin || !item.id) return;
+    if (!window.confirm(`Delete homework: ${item.title || "this homework"}?`)) return;
+    try {
+      await deleteHomework(item.id);
+      await loadHomework();
+      setHomeworkMessage("Homework deleted successfully. 🗑️");
+    } catch (error: any) {
+      console.error("Homework delete error:", error);
+      setHomeworkMessage(
+        `Firebase Error: ${error?.code || "unknown-error"} | ${
+          error?.message || "Unable to delete homework"
+        }`
+      );
+    }
+  };
+
+  useEffect(() => {
+    if (page === "homework" && isAdmin) loadHomework();
+  }, [page, isAdmin]);
 
   const openAddFeeMonth = (student: Student) => {
     if (!isAdmin) return;
@@ -1044,7 +1277,34 @@ export default function App() {
 
               <h2 style={{ marginTop: 25 }}>📚 Homework</h2>
 
-              <div style={styles.emptyBox}>Homework will appear here.</div>
+              {homework.filter((item) => {
+                const classMatch = !item.className || item.className === studentData?.className;
+                const batchMatch = !item.batch || item.batch === studentData?.batch;
+                return classMatch && batchMatch;
+              }).length === 0 ? (
+                <div style={styles.emptyBox}>No homework assigned for your class yet.</div>
+              ) : (
+                <div>
+                  {homework
+                    .filter((item) => {
+                      const classMatch = !item.className || item.className === studentData?.className;
+                      const batchMatch = !item.batch || item.batch === studentData?.batch;
+                      return classMatch && batchMatch;
+                    })
+                    .slice(0, 8)
+                    .map((item) => (
+                      <div key={item.id} style={styles.homeworkItem}>
+                        <div style={styles.homeworkMeta}>
+                          <strong>{item.subject || "Homework"}</strong>
+                          <span>{item.day}, {item.homeworkDate} · {item.year}</span>
+                        </div>
+                        <h3 style={{ margin: "8px 0" }}>{item.title}</h3>
+                        <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>{item.description}</p>
+                        {item.dueDate && <small style={styles.muted}>Due: {item.dueDate}</small>}
+                      </div>
+                    ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -1487,6 +1747,51 @@ export default function App() {
           </div>
         )}
 
+        {showCredentialForm && credentialStudent && isAdmin && (
+          <div style={styles.card}>
+            <div style={styles.formHeader}>
+              <div>
+                <h2>🔐 Change Student Login</h2>
+                <p style={styles.muted}>
+                  {credentialStudent.name} · {credentialStudent.studentId}
+                </p>
+              </div>
+              <button style={styles.closeButton} onClick={() => setShowCredentialForm(false)}>✕</button>
+            </div>
+
+            <form onSubmit={saveStudentCredentials}>
+              <div style={styles.formGrid}>
+                <FormField
+                  label="Login Username / Email"
+                  value={newStudentEmail}
+                  onChange={setNewStudentEmail}
+                  placeholder="student@tmail.com"
+                  type="email"
+                />
+                <FormField
+                  label="New Password"
+                  value={newStudentPassword}
+                  onChange={setNewStudentPassword}
+                  placeholder="Minimum 6 characters"
+                  type="password"
+                />
+              </div>
+              <p style={styles.muted}>Leave a field blank if you do not want to change it.</p>
+              {credentialMessage && (
+                <div style={credentialMessage.includes("successfully") ? styles.successBox : styles.errorBox}>
+                  {credentialMessage}
+                </div>
+              )}
+              <div style={styles.formActions}>
+                <button type="button" style={styles.secondaryButton} onClick={() => setShowCredentialForm(false)}>Cancel</button>
+                <button type="submit" style={styles.primaryButtonSmall} disabled={savingCredentials}>
+                  {savingCredentials ? "Saving..." : "💾 Save Login Changes"}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
         {/* =================================================
            STUDENT TABLE
         ================================================= */}
@@ -1549,12 +1854,20 @@ export default function App() {
                             >
                               ✏️ Edit
                             </button>
+                            {student.authUid && (
+                              <button
+                                style={styles.historyButton}
+                                onClick={() => openCredentialForm(student)}
+                              >
+                                🔐 Change Login
+                              </button>
+                            )}
                             {student.email && (
                               <button
                                 style={styles.historyButton}
                                 onClick={() => handlePasswordReset(student)}
                               >
-                                🔑 Reset Password
+                                📩 Send Reset Link
                               </button>
                             )}
                           </>
@@ -1564,6 +1877,107 @@ export default function App() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+        </div>
+      </>
+    );
+  };
+
+  /* =========================================================
+     HOMEWORK PAGE
+  ========================================================= */
+
+  const homeworkPage = () => {
+    const classOptions = Array.from(
+      new Set(students.map((student) => student.className).filter(Boolean))
+    );
+    const batchOptions = Array.from(
+      new Set(students.map((student) => student.batch).filter(Boolean))
+    );
+
+    return (
+      <>
+        <div style={styles.pageHeader}>
+          <div>
+            <h1>📚 Homework</h1>
+            <p style={styles.muted}>Assign and manage homework by class and batch</p>
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button style={styles.secondaryButton} onClick={loadHomework}>
+              🔄 Refresh
+            </button>
+            <button style={styles.primaryButtonSmall} onClick={openAddHomework}>
+              ➕ Add Homework
+            </button>
+          </div>
+        </div>
+
+        {homeworkMessage && (
+          <div style={homeworkMessage.includes("successfully") ? styles.successBox : styles.errorBox}>
+            {homeworkMessage}
+          </div>
+        )}
+
+        {showHomeworkForm && (
+          <div style={styles.card}>
+            <div style={styles.formHeader}>
+              <div>
+                <h2>{editingHomework ? "✏️ Edit Homework" : "➕ Add Homework"}</h2>
+                <p style={styles.muted}>Date, day and year are saved automatically.</p>
+              </div>
+              <button style={styles.closeButton} onClick={resetHomeworkForm}>✕</button>
+            </div>
+            <form onSubmit={saveHomework}>
+              <div style={styles.formGrid}>
+                <FormField label="Class *" value={homeworkClass} onChange={setHomeworkClass} placeholder="Select class" type="select" options={classOptions.map((value) => ({ label: value as string, value: value as string }))} />
+                <FormField label="Batch" value={homeworkBatch} onChange={setHomeworkBatch} placeholder="All batches" type="select" options={[{label:"All batches", value:""}, ...batchOptions.map((value) => ({label:value as string, value:value as string}))]} />
+                <FormField label="Subject" value={homeworkSubject} onChange={setHomeworkSubject} placeholder="Physics / Chemistry / Maths" />
+                <FormField label="Title *" value={homeworkTitle} onChange={setHomeworkTitle} placeholder="Example: Chapter 3 Questions" />
+                <FormField label="Homework Date *" value={homeworkDate} onChange={setHomeworkDate} placeholder="YYYY-MM-DD" type="date" />
+                <FormField label="Due Date" value={homeworkDueDate} onChange={setHomeworkDueDate} placeholder="Optional" type="date" />
+              </div>
+              <label style={styles.label}>Homework / Instructions *</label>
+              <textarea
+                style={{ ...styles.input, minHeight: 130, resize: "vertical" }}
+                value={homeworkDescription}
+                onChange={(e) => setHomeworkDescription(e.target.value)}
+                placeholder="Write the homework, questions, pages, instructions, etc."
+                required
+              />
+              <div style={styles.formActions}>
+                <button type="button" style={styles.secondaryButton} onClick={resetHomeworkForm}>Cancel</button>
+                <button type="submit" style={styles.primaryButtonSmall} disabled={savingHomework}>
+                  {savingHomework ? "Saving..." : editingHomework ? "💾 Update Homework" : "💾 Add Homework"}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        <div style={styles.card}>
+          <h2>All Homework</h2>
+          {homeworkLoading ? (
+            <div style={styles.emptyBox}>Loading homework...</div>
+          ) : homework.length === 0 ? (
+            <div style={styles.emptyBox}>No homework added yet.</div>
+          ) : (
+            <div style={styles.homeworkList}>
+              {homework.map((item) => (
+                <div key={item.id} style={styles.homeworkItem}>
+                  <div style={styles.homeworkMeta}>
+                    <strong>{item.className}{item.batch ? ` · ${item.batch}` : " · All batches"}</strong>
+                    <span>{item.day}, {item.homeworkDate} · {item.year}</span>
+                  </div>
+                  <h3 style={{ margin: "8px 0 4px" }}>{item.subject ? `${item.subject}: ` : ""}{item.title}</h3>
+                  <p style={{ margin: "0 0 8px", whiteSpace: "pre-wrap" }}>{item.description}</p>
+                  {item.dueDate && <div style={styles.muted}>Due: {item.dueDate}</div>}
+                  <div style={styles.formActions}>
+                    <button style={styles.editButton} onClick={() => openEditHomework(item)}>✏️ Edit</button>
+                    <button style={styles.deleteButton} onClick={() => removeHomework(item)}>🗑️ Delete</button>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -2244,14 +2658,16 @@ export default function App() {
             💰 Fees
           </button>
 
-          <button
-            style={
-              page === "homework" ? styles.navButtonActive : styles.navButton
-            }
-            onClick={() => setPage("homework")}
-          >
-            📚 Homework
-          </button>
+          {isAdmin && (
+            <button
+              style={
+                page === "homework" ? styles.navButtonActive : styles.navButton
+              }
+              onClick={() => setPage("homework")}
+            >
+              📚 Homework
+            </button>
+          )}
 
           <button
             style={
@@ -2283,8 +2699,7 @@ export default function App() {
 
           {page === "fees" && feesPage()}
 
-          {page === "homework" &&
-            simplePage("Homework", "📚", "Assign homework to batches")}
+          {page === "homework" && isAdmin && homeworkPage()}
 
           {page === "notices" &&
             simplePage("Notices", "📢", "Publish notices for students")}
@@ -2344,25 +2759,45 @@ function FormField({
   onChange,
   placeholder,
   type = "text",
+  options,
+  required = true,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
   type?: string;
+  options?: { label: string; value: string }[];
+  required?: boolean;
 }) {
   return (
     <div>
       <label style={styles.label}>{label}</label>
 
-      <input
-        style={styles.input}
-        type={type}
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        required
-      />
+      {type === "select" ? (
+        <select
+          style={styles.input}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          required={required}
+        >
+          {placeholder && <option value="">{placeholder}</option>}
+          {(options || []).map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input
+          style={styles.input}
+          type={type}
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+          required={required}
+        />
+      )}
     </div>
   );
 }
@@ -2799,6 +3234,27 @@ const styles: {
     borderRadius: 12,
     padding: 16,
     background: "#fafafa",
+  },
+
+  homeworkList: {
+    display: "grid",
+    gap: 14,
+  },
+
+  homeworkItem: {
+    border: "1px solid #e5e7eb",
+    borderRadius: 12,
+    padding: 16,
+    background: "#fafafa",
+  },
+
+  homeworkMeta: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    color: "#4b5563",
+    fontSize: 13,
+    flexWrap: "wrap",
   },
 
   feeHistoryGrid: {

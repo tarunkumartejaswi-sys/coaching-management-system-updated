@@ -7,6 +7,7 @@ import {
   getDocs,
   getDoc,
   updateDoc,
+  deleteDoc,
   query,
   orderBy,
 } from "firebase/firestore";
@@ -362,3 +363,41 @@ export const updateFeeMonth = async (studentId, monthId, monthlyFee, dueDate = "
 };
 
 export default db;
+
+
+/* =========================================
+   HOMEWORK
+========================================= */
+
+export const getHomework = async () => {
+  const snapshot = await getDocs(
+    query(collection(db, "homework"), orderBy("homeworkDate", "desc"))
+  );
+
+  return snapshot.docs.map((item) => ({
+    id: item.id,
+    ...item.data(),
+  }));
+};
+
+export const addHomework = async (homework) => {
+  const ref = doc(collection(db, "homework"));
+  await setDoc(ref, {
+    ...homework,
+    createdAt: new Date().toISOString(),
+  });
+  return ref.id;
+};
+
+export const updateHomework = async (homeworkId, homework) => {
+  if (!homeworkId) throw new Error("Homework ID is required");
+  await updateDoc(doc(db, "homework", homeworkId), {
+    ...homework,
+    updatedAt: new Date().toISOString(),
+  });
+};
+
+export const deleteHomework = async (homeworkId) => {
+  if (!homeworkId) throw new Error("Homework ID is required");
+  await deleteDoc(doc(db, "homework", homeworkId));
+};
