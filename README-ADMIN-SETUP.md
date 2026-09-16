@@ -11,15 +11,20 @@ Import/connect the GitHub repository. Vercel should detect Vite automatically.
 Build command: `npm run build`
 Output directory: `dist`
 
-## 3. Admin direct password/email change
-The Admin -> Students -> Change Login button changes the REAL Firebase Authentication account through `/api/admin-student-account`.
+## 3. Admin direct password/email change + delete student
+The Admin -> Students -> Change Login button changes the REAL Firebase Authentication account through `/api/admin-student-account`. The Delete button uses the same protected Admin API and permanently removes the student's Auth account, user profile, student record, directory entry, fee history, and references from tests, attendance and homework.
 
-Vercel Environment Variables required:
+Vercel Environment Variables: use either the single JSON option (easiest) or the three-variable option.
+
+**Option A - easiest:**
+- `FIREBASE_SERVICE_ACCOUNT_JSON` = the complete Firebase service-account JSON as one line/value
+
+**Option B:**
 - `FIREBASE_PROJECT_ID`
 - `FIREBASE_CLIENT_EMAIL`
 - `FIREBASE_PRIVATE_KEY`
 
-Use the Firebase service-account values. Keep the private key only in Vercel environment variables, never in frontend code.
+Use the Firebase service-account values. Keep all Admin credentials only in Vercel Environment Variables, never in frontend code or GitHub. After changing Environment Variables, redeploy the Production deployment.
 
 ## 4. Firebase
 Deploy both Firestore rules and Storage rules from `firestore.rules` and `storage.rules`.
@@ -38,4 +43,5 @@ The application uses Firebase Authentication, Firestore and Storage for students
 - Daily attendance and student monthly green/red calendar
 - Professional notices
 - Monthly fees, payment history, dues and previous-month records
-- Admin direct login credential change
+- Admin direct login credential change (real Firebase Auth password/email update)
+- Admin permanent student deletion with academic/fee cleanup

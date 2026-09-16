@@ -300,6 +300,7 @@ export default function App() {
   const [newStudentPassword, setNewStudentPassword] = useState("");
   const [savingCredentials, setSavingCredentials] = useState(false);
   const [credentialMessage, setCredentialMessage] = useState("");
+  const [deletingStudentId, setDeletingStudentId] = useState<string | null>(null);
 
   /* =========================================================
      EDIT MONTHLY FEE FROM FEES PAGE
@@ -928,7 +929,7 @@ export default function App() {
 
   const saveStudentCredentials = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isAdmin || !credentialStudent?.authUid) {
+    if (!isAdmin || !credentialStudent) {
       setCredentialMessage("Only the admin can change student login credentials.");
       return;
     }
@@ -955,7 +956,8 @@ export default function App() {
           Authorization: `Bearer ${idToken}`,
         },
         body: JSON.stringify({
-          studentAuthUid: credentialStudent.authUid,
+          studentAuthUid: credentialStudent.authUid || undefined,
+          studentId: credentialStudent.studentId || undefined,
           email: newStudentEmail.trim() || undefined,
           password: newStudentPassword || undefined,
         }),
@@ -982,6 +984,52 @@ export default function App() {
       );
     } finally {
       setSavingCredentials(false);
+    }
+  };
+
+  const deleteStudent = async (student: Student) => {
+    if (!isAdmin || !student.studentId) return;
+
+    const confirmed = window.confirm(
+      `Delete ${student.name || "this student"} (${student.studentId})?\n\nThis will permanently remove the student record, login account, profile, fee history and directory entry. This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setDeletingStudentId(student.studentId);
+    setStudentMessage("");
+
+    try {
+      const idToken = await user.getIdToken(true);
+      const response = await fetch("/api/admin-student-account", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          action: "delete",
+          studentId: student.studentId,
+          studentAuthUid: student.authUid || undefined,
+        }),
+      });
+
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result?.error || "Unable to delete student.");
+      }
+
+      const updatedStudents = await getStudents();
+      setStudents(updatedStudents);
+      setDirectoryStudents(updatedStudents);
+      setEditingStudent(null);
+      setCredentialStudent(null);
+      setShowCredentialForm(false);
+      setStudentMessage(`Student ${student.name || student.studentId} deleted successfully. 🗑️`);
+    } catch (error: any) {
+      console.error("Student deletion error:", error);
+      setStudentMessage(error?.message || "Unable to delete student.");
+    } finally {
+      setDeletingStudentId(null);
     }
   };
 
@@ -2309,6 +2357,8 @@ export default function App() {
 
                     <th style={styles.th}>Average</th>
 
+                    <th style={styles.th}>Monthly Fee</th>
+
                     <th style={styles.th}>Fee Due</th>
 
                     <th style={styles.th}>Action</th>
@@ -2361,6 +2411,14 @@ export default function App() {
                                 📩 Send Reset Link
                               </button>
                             )}
+                            <button
+                              style={styles.deleteButton}
+                              onClick={() => deleteStudent(student)}
+                              disabled={deletingStudentId === student.studentId}
+                              title="Permanently delete this student and their login"
+                            >
+                              {deletingStudentId === student.studentId ? "Deleting..." : "🗑️ Delete"}
+                            </button>
                           </>
                         )}
                       </td>
