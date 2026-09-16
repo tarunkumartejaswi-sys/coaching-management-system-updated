@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { onAuthStateChanged } from "firebase/auth";
-import { doc, setDoc, updateDoc } from "firebase/firestore";
+import { doc, setDoc, updateDoc, getDocs, collection, query, orderBy, deleteDoc } from "firebase/firestore";
+import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 
 import auth, {
   loginUser,
@@ -89,6 +90,46 @@ type Homework = {
   createdAt?: string;
 };
 
+type TestResult = {
+  present?: boolean;
+  marks?: number | null;
+};
+
+type Test = {
+  id?: string;
+  name?: string;
+  subject?: string;
+  className?: string;
+  batch?: string;
+  date?: string;
+  total?: number;
+  questionPaperUrl?: string;
+  questionPaperName?: string;
+  answerSheetUrl?: string;
+  answerSheetName?: string;
+  results?: Record<string, TestResult>;
+  createdAt?: string;
+};
+
+type AttendanceDay = {
+  id?: string;
+  date?: string;
+  day?: string;
+  year?: number;
+  records?: Record<string, "present" | "absent">;
+  createdAt?: string;
+};
+
+type Notice = {
+  id?: string;
+  title?: string;
+  message?: string;
+  date?: string;
+  priority?: "normal" | "important" | "urgent";
+  audience?: string;
+  createdAt?: string;
+};
+
 /* =========================================================
    APP
 ========================================================= */
@@ -102,6 +143,7 @@ export default function App() {
   const [studentData, setStudentData] = useState<Student | null>(null);
 
   const [students, setStudents] = useState<Student[]>([]);
+  const [directoryStudents, setDirectoryStudents] = useState<Student[]>([]);
 
   const [fees, setFees] = useState<Fee[]>([]);
   const [studentFee, setStudentFee] = useState<Fee | null>(null);
@@ -156,6 +198,48 @@ export default function App() {
   const [homeworkDate, setHomeworkDate] = useState("");
   const [homeworkDueDate, setHomeworkDueDate] = useState("");
   const [savingHomework, setSavingHomework] = useState(false);
+
+  /* =========================================================
+     TESTS & RESULTS
+  ========================================================= */
+  const [tests, setTests] = useState<Test[]>([]);
+  const [testsLoading, setTestsLoading] = useState(false);
+  const [testMessage, setTestMessage] = useState("");
+  const [showTestForm, setShowTestForm] = useState(false);
+  const [editingTest, setEditingTest] = useState<Test | null>(null);
+  const [testName, setTestName] = useState("");
+  const [testSubject, setTestSubject] = useState("");
+  const [testClass, setTestClass] = useState("");
+  const [testBatch, setTestBatch] = useState("");
+  const [testDate, setTestDate] = useState("");
+  const [testTotal, setTestTotal] = useState("100");
+  const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
+  const [testQuestionFile, setTestQuestionFile] = useState<File | null>(null);
+  const [testAnswerFile, setTestAnswerFile] = useState<File | null>(null);
+  const [savingTest, setSavingTest] = useState(false);
+
+  /* =========================================================
+     ATTENDANCE
+  ========================================================= */
+  const [attendanceDays, setAttendanceDays] = useState<AttendanceDay[]>([]);
+  const [attendanceDate, setAttendanceDate] = useState(new Date().toISOString().slice(0, 10));
+  const [attendanceRecords, setAttendanceRecords] = useState<Record<string, "present" | "absent">>({});
+  const [attendanceMessage, setAttendanceMessage] = useState("");
+  const [attendanceLoading, setAttendanceLoading] = useState(false);
+
+  /* =========================================================
+     NOTICES
+  ========================================================= */
+  const [notices, setNotices] = useState<Notice[]>([]);
+  const [noticeTitle, setNoticeTitle] = useState("");
+  const [noticeMessage, setNoticeMessage] = useState("");
+  const [noticePriority, setNoticePriority] = useState<"normal" | "important" | "urgent">("normal");
+  const [noticeDate, setNoticeDate] = useState(new Date().toISOString().slice(0, 10));
+  const [noticeSaving, setNoticeSaving] = useState(false);
+  const [noticeStatus, setNoticeStatus] = useState("");
+
+  const [homeworkAssignedStudents, setHomeworkAssignedStudents] = useState<string[]>([]);
+  const [homeworkCompletion, setHomeworkCompletion] = useState<Record<string, boolean>>({});
 
   /* Admin-only direct Firebase Auth credential change */
   const [showCredentialForm, setShowCredentialForm] = useState(false);
@@ -500,11 +584,15 @@ export default function App() {
           );
 
           setStudentFeeHistory(ownFeeHistory);
+          const directorySnapshot = await getDocs(collection(db, "studentDirectory"));
+          setDirectoryStudents(directorySnapshot.docs.map((item: any) => ({ id: item.id, ...item.data() })) as Student[]);
           setHomework(await getHomework());
         } else {
           const allStudents = await getStudents();
 
           setStudents(allStudents);
+          setDirectoryStudents(allStudents);
+          await Promise.all(allStudents.filter((s: Student) => s.studentId).map((s: Student) => setDoc(doc(db, "studentDirectory", s.studentId!), { studentId: s.studentId, name: s.name || "", className: s.className || "", batch: s.batch || "" }, { merge: true })));
         }
       } catch (error) {
         console.error("Error loading user data:", error);
@@ -642,6 +730,7 @@ export default function App() {
 
         authUid: newUser.uid,
       });
+      await setDoc(doc(db, "studentDirectory", studentId.trim()), { studentId: studentId.trim(), name: studentName.trim(), className: className.trim(), batch: batch.trim() }, { merge: true });
 
       /* REFRESH */
 
@@ -797,6 +886,8 @@ export default function App() {
     setHomeworkDescription("");
     setHomeworkDate("");
     setHomeworkDueDate("");
+    setHomeworkAssignedStudents([]);
+    setHomeworkCompletion({});
   };
 
   const openAddHomework = () => {
@@ -816,6 +907,8 @@ export default function App() {
     setHomeworkDescription(item.description || "");
     setHomeworkDate(item.homeworkDate || "");
     setHomeworkDueDate(item.dueDate || "");
+    setHomeworkAssignedStudents((item as any).assignedStudentIds || []);
+    setHomeworkCompletion((item as any).completion || {});
     setHomeworkMessage("");
     setShowHomeworkForm(true);
   };
@@ -840,6 +933,8 @@ export default function App() {
       description: homeworkDescription.trim(),
       homeworkDate,
       dueDate: homeworkDueDate || "",
+      assignedStudentIds: homeworkAssignedStudents,
+      completion: homeworkCompletion,
       day: selectedDate.toLocaleDateString("en-IN", { weekday: "long" }),
       year: selectedDate.getFullYear(),
       createdBy: profile?.name || "Admin",
@@ -888,6 +983,181 @@ export default function App() {
 
   useEffect(() => {
     if (page === "homework" && isAdmin) loadHomework();
+  }, [page, isAdmin]);
+
+  /* =========================================================
+     SHARED ACADEMIC DATA
+  ========================================================= */
+
+  const loadTests = async () => {
+    setTestsLoading(true);
+    try {
+      const snapshot = await getDocs(query(collection(db, "tests"), orderBy("date", "desc")));
+      setTests(snapshot.docs.map((item: any) => ({ id: item.id, ...item.data() })) as Test[]);
+    } catch (error: any) {
+      console.error("Test loading error:", error);
+      setTestMessage(`Unable to load tests: ${error?.message || "Unknown error"}`);
+    } finally { setTestsLoading(false); }
+  };
+
+  const loadAttendance = async () => {
+    setAttendanceLoading(true);
+    try {
+      const snapshot = await getDocs(query(collection(db, "attendance"), orderBy("date", "desc")));
+      const rows = snapshot.docs.map((item: any) => ({ id: item.id, ...item.data() })) as AttendanceDay[];
+      setAttendanceDays(rows);
+      const selected = rows.find((row) => row.date === attendanceDate);
+      setAttendanceRecords(selected?.records || {});
+    } catch (error: any) {
+      console.error("Attendance loading error:", error);
+      setAttendanceMessage(`Unable to load attendance: ${error?.message || "Unknown error"}`);
+    } finally { setAttendanceLoading(false); }
+  };
+
+  const loadNotices = async () => {
+    try {
+      const snapshot = await getDocs(query(collection(db, "notices"), orderBy("date", "desc")));
+      setNotices(snapshot.docs.map((item: any) => ({ id: item.id, ...item.data() })) as Notice[]);
+    } catch (error: any) {
+      console.error("Notice loading error:", error);
+      setNoticeStatus(`Unable to load notices: ${error?.message || "Unknown error"}`);
+    }
+  };
+
+  const loadAcademicData = async () => {
+    try {
+      await Promise.all([loadTests(), loadAttendance(), loadNotices(), loadHomework()]);
+    } catch (error) { console.error(error); }
+  };
+
+  const resetTestForm = () => {
+    setShowTestForm(false); setEditingTest(null); setTestName(""); setTestSubject("");
+    setTestClass(""); setTestBatch(""); setTestDate(new Date().toISOString().slice(0,10));
+    setTestTotal("100"); setTestResults({}); setTestQuestionFile(null); setTestAnswerFile(null);
+  };
+
+  const openAddTest = () => { if (!isAdmin) return; resetTestForm(); setShowTestForm(true); };
+
+  const openEditTest = (test: Test) => {
+    if (!isAdmin) return;
+    setEditingTest(test); setTestName(test.name || ""); setTestSubject(test.subject || "");
+    setTestClass(test.className || ""); setTestBatch(test.batch || ""); setTestDate(test.date || "");
+    setTestTotal(String(test.total || 100)); setTestResults(test.results || {}); setTestMessage("");
+    setTestQuestionFile(null); setTestAnswerFile(null); setShowTestForm(true);
+  };
+
+  const uploadAcademicFile = async (file: File, folder: string) => {
+    const storage = getStorage();
+    const safeName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+    const fileRef = storageRef(storage, `${folder}/${safeName}`);
+    await uploadBytes(fileRef, file);
+    return getDownloadURL(fileRef);
+  };
+
+  const saveTest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isAdmin) return;
+    if (!testName.trim() || !testSubject.trim() || !testDate) { setTestMessage("Enter test name, subject and date."); return; }
+    const total = Number(testTotal);
+    if (!Number.isFinite(total) || total <= 0) { setTestMessage("Total marks must be greater than 0."); return; }
+    setSavingTest(true); setTestMessage("");
+    try {
+      let questionPaperUrl = editingTest?.questionPaperUrl || "";
+      let questionPaperName = editingTest?.questionPaperName || "";
+      let answerSheetUrl = editingTest?.answerSheetUrl || "";
+      let answerSheetName = editingTest?.answerSheetName || "";
+      if (testQuestionFile) { questionPaperUrl = await uploadAcademicFile(testQuestionFile, "tests/question-papers"); questionPaperName = testQuestionFile.name; }
+      if (testAnswerFile) { answerSheetUrl = await uploadAcademicFile(testAnswerFile, "tests/answer-sheets"); answerSheetName = testAnswerFile.name; }
+      const payload = { name: testName.trim(), subject: testSubject.trim(), className: testClass.trim(), batch: testBatch.trim(), date: testDate, total, results: testResults, questionPaperUrl, questionPaperName, answerSheetUrl, answerSheetName, updatedAt: new Date().toISOString() };
+      if (editingTest?.id) await updateDoc(doc(db, "tests", editingTest.id), payload);
+      else await setDoc(doc(collection(db, "tests")), { ...payload, createdAt: new Date().toISOString() });
+      await loadTests(); resetTestForm(); setTestMessage("Test and results saved successfully! ✅");
+    } catch (error: any) {
+      console.error("Test save error:", error);
+      setTestMessage(`Unable to save test: ${error?.message || "Unknown error"}`);
+    } finally { setSavingTest(false); }
+  };
+
+  const deleteTest = async (test: Test) => {
+    if (!isAdmin || !test.id) return;
+    if (!window.confirm(`Delete ${test.name || "this test"}?`)) return;
+    await deleteDoc(doc(db, "tests", test.id));
+    await loadTests(); setTestMessage("Test deleted.");
+  };
+
+  const saveAttendance = async () => {
+    if (!isAdmin || !attendanceDate) return;
+    const d = new Date(`${attendanceDate}T12:00:00`);
+    try {
+      await setDoc(doc(db, "attendance", attendanceDate), {
+        date: attendanceDate, day: d.toLocaleDateString("en-IN", { weekday: "long" }), year: d.getFullYear(),
+        records: attendanceRecords, updatedAt: new Date().toISOString()
+      }, { merge: true });
+      await loadAttendance(); setAttendanceMessage("Attendance saved successfully! ✅");
+    } catch (error: any) { setAttendanceMessage(`Unable to save attendance: ${error?.message || "Unknown error"}`); }
+  };
+
+  const setAllAttendance = (status: "present" | "absent") => {
+    const next: Record<string, "present" | "absent"> = {};
+    students.forEach((student) => { if (student.studentId) next[student.studentId] = status; });
+    setAttendanceRecords(next);
+  };
+
+  const saveNotice = async (e: React.FormEvent) => {
+    e.preventDefault(); if (!isAdmin) return;
+    if (!noticeTitle.trim() || !noticeMessage.trim()) { setNoticeStatus("Enter notice title and message."); return; }
+    setNoticeSaving(true); setNoticeStatus("");
+    try {
+      const ref = doc(collection(db, "notices"));
+      await setDoc(ref, { title: noticeTitle.trim(), message: noticeMessage.trim(), priority: noticePriority, date: noticeDate, audience: "all", createdAt: new Date().toISOString() });
+      setNoticeTitle(""); setNoticeMessage(""); setNoticePriority("normal"); setNoticeDate(new Date().toISOString().slice(0,10));
+      await loadNotices(); setNoticeStatus("Notice published successfully! ✅");
+    } catch (error: any) { setNoticeStatus(`Unable to publish notice: ${error?.message || "Unknown error"}`); }
+    finally { setNoticeSaving(false); }
+  };
+
+  const deleteNotice = async (notice: Notice) => {
+    if (!isAdmin || !notice.id) return;
+    if (!window.confirm(`Delete notice: ${notice.title || "this notice"}?`)) return;
+    await deleteDoc(doc(db, "notices", notice.id));
+    await loadNotices(); setNoticeStatus("Notice deleted.");
+  };
+
+  const homeworkForStudent = (student: Student | null) => homework.filter((item) => {
+    const classMatch = !item.className || item.className === student?.className;
+    const batchMatch = !item.batch || item.batch === student?.batch;
+    const assigned = Array.isArray((item as any).assignedStudentIds) ? (item as any).assignedStudentIds : null;
+    return classMatch && batchMatch && (!assigned || assigned.length === 0 || assigned.includes(student?.studentId));
+  });
+
+  const homeworkDefaulters = (item: Homework) => {
+    const completion = ((item as any).completion || {}) as Record<string, boolean>;
+    const roster = students.length ? students : directoryStudents;
+    return roster.filter((s) => s.studentId && completion[s.studentId] !== true && homeworkForStudent(s).some((h) => h.id === item.id));
+  };
+
+  const studentAverageMap = () => {
+    const sums: Record<string, { total: number; count: number }> = {};
+    const roster = students.length ? students : directoryStudents;
+    roster.forEach((s) => { if (s.studentId) sums[s.studentId] = { total: 0, count: 0 }; });
+    tests.forEach((test) => (Object.entries(test.results || {}) as [string, TestResult][]).forEach(([sid, result]) => {
+      if (result?.present && result?.marks !== null && result?.marks !== undefined && sums[sid]) {
+        const pct = (Number(result.marks) / Number(test.total || 0)) * 100;
+        if (Number.isFinite(pct)) { sums[sid].total += pct; sums[sid].count += 1; }
+      }
+    }));
+    return Object.fromEntries(Object.entries(sums).map(([sid, v]) => [sid, v.count ? v.total / v.count : 0]));
+  };
+
+  useEffect(() => {
+    if (!user) return;
+    loadAcademicData();
+  }, [user, isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin && page === "attendance") loadAttendance();
+    if (!isAdmin && page === "tests") loadTests();
+    if (page === "notices") loadNotices();
   }, [page, isAdmin]);
 
   const openAddFeeMonth = (student: Student) => {
@@ -1079,6 +1349,7 @@ export default function App() {
           name: editName.trim(),
         });
       }
+      await setDoc(doc(db, "studentDirectory", editingStudent.studentId), { studentId: editingStudent.studentId, name: editName.trim(), className: editClassName.trim(), batch: editBatch.trim() }, { merge: true });
 
       /* REFRESH LIST */
 
@@ -1243,7 +1514,7 @@ export default function App() {
               icon="🔴"
             />
 
-            <StatCard title="My Rank" value="Coming soon" icon="🏆" />
+            <StatCard title="My Rank" value={(() => { const av = studentAverageMap(); const roster = students.length ? students : directoryStudents; const ranked = roster.map(s => ({ id: s.studentId || "", avg: av[s.studentId || ""] || 0 })).filter(x => x.avg > 0).sort((a,b) => b.avg-a.avg); const idx = ranked.findIndex(x => x.id === studentData?.studentId); return idx >= 0 ? `#${idx + 1}` : "-"; })()} icon="🏆" />
           </div>
 
           <div style={styles.twoColumn}>
@@ -1272,8 +1543,13 @@ export default function App() {
 
             <div style={styles.card}>
               <h2>📢 Notices</h2>
-
-              <div style={styles.emptyBox}>No notices yet.</div>
+              {notices.length === 0 ? <div style={styles.emptyBox}>No notices yet.</div> : notices.slice(0, 5).map((notice) => (
+                <div key={notice.id} style={styles.noticeItem}>
+                  <div style={styles.homeworkMeta}><strong>{notice.title}</strong><span>{notice.date}</span></div>
+                  <p style={{ margin: "7px 0" }}>{notice.message}</p>
+                  <span style={styles.noticeBadge}>{(notice.priority || "normal").toUpperCase()}</span>
+                </div>
+              ))}
 
               <h2 style={{ marginTop: 25 }}>📚 Homework</h2>
 
@@ -1285,12 +1561,7 @@ export default function App() {
                 <div style={styles.emptyBox}>No homework assigned for your class yet.</div>
               ) : (
                 <div>
-                  {homework
-                    .filter((item) => {
-                      const classMatch = !item.className || item.className === studentData?.className;
-                      const batchMatch = !item.batch || item.batch === studentData?.batch;
-                      return classMatch && batchMatch;
-                    })
+                  {homeworkForStudent(studentData)
                     .slice(0, 8)
                     .map((item) => (
                       <div key={item.id} style={styles.homeworkItem}>
@@ -1301,11 +1572,18 @@ export default function App() {
                         <h3 style={{ margin: "8px 0" }}>{item.title}</h3>
                         <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>{item.description}</p>
                         {item.dueDate && <small style={styles.muted}>Due: {item.dueDate}</small>}
+                        <div style={{ marginTop: 10 }}><span style={((item as any).completion || {})[studentData?.studentId || ""] ? styles.doneBadge : styles.pendingBadge}>{((item as any).completion || {})[studentData?.studentId || ""] ? "✓ Homework Done" : "⚠ Homework Not Done"}</span></div>
                       </div>
                     ))}
                 </div>
               )}
+              {homeworkForStudent(studentData).some(item => homeworkDefaulters(item).length > 0) && <div style={styles.warningBox}><strong>⚠ Homework Defaulters</strong><div style={{marginTop:6}}>{homeworkForStudent(studentData).filter(item => homeworkDefaulters(item).length > 0).slice(0,5).map(item => <div key={item.id}>{item.title}: {homeworkDefaulters(item).map(s=>s.name).join(", ")}</div>)}</div></div>}
             </div>
+          </div>
+
+          <div style={styles.card}>
+            <h2>📅 My Attendance</h2>
+            {(() => { const rows = attendanceDays.filter(d => d.records?.[studentData?.studentId || ""]); const present = rows.filter(d => d.records?.[studentData?.studentId || ""] === "present").length; const pct = rows.length ? present / rows.length * 100 : 0; return <><div style={styles.feeHistoryGrid}><div><span style={styles.smallLabel}>Present</span><strong>{present}</strong></div><div><span style={styles.smallLabel}>Absent</span><strong>{Math.max(rows.length-present,0)}</strong></div><div><span style={styles.smallLabel}>Attendance %</span><strong>{pct.toFixed(0)}%</strong></div><div><span style={styles.smallLabel}>Days Recorded</span><strong>{rows.length}</strong></div></div>{rows.length===0?<div style={styles.emptyBox}>No daily attendance has been recorded yet.</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Date</th><th style={styles.th}>Day</th><th style={styles.th}>Status</th></tr></thead><tbody>{rows.slice(0,20).map(d=><tr key={d.id}><td style={styles.td}>{d.date}</td><td style={styles.td}>{d.day}</td><td style={styles.td}>{d.records?.[studentData?.studentId || ""] === "present" ? <span style={styles.doneBadge}>✓ Present</span> : <span style={styles.pendingBadge}>Absent</span>}</td></tr>)}</tbody></table></div>}</>; })()}
           </div>
 
           <div style={styles.card}>
@@ -1396,9 +1674,12 @@ export default function App() {
           </div>
 
           <div style={styles.card}>
-            <h2>📝 My Test Results</h2>
-
-            <div style={styles.emptyBox}>Test results will appear here.</div>
+            <div style={styles.sectionTitleRow}><div><h2 style={{ margin: 0 }}>📝 My Test Results</h2><p style={styles.muted}>Your performance across all tests</p></div></div>
+            {tests.length === 0 ? <div style={styles.emptyBox}>No test results published yet.</div> : (
+              <div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Test</th><th style={styles.th}>Subject</th><th style={styles.th}>Date</th><th style={styles.th}>Marks</th><th style={styles.th}>Percentage</th></tr></thead><tbody>
+                {tests.map((test) => { const r = (test.results || {})[studentData?.studentId || ""]; const pct = r?.present && r?.marks != null ? (Number(r.marks) / Number(test.total || 1)) * 100 : null; return <tr key={test.id}><td style={styles.td}>{test.name}</td><td style={styles.td}>{test.subject}</td><td style={styles.td}>{test.date}</td><td style={styles.td}>{r?.present ? `${r.marks ?? "-"} / ${test.total}` : "Absent"}</td><td style={styles.td}>{pct == null ? "-" : `${pct.toFixed(1)}%`}</td></tr>; })}
+              </tbody></table></div>
+            )}
           </div>
         </main>
       </div>
@@ -1937,6 +2218,20 @@ export default function App() {
                 <FormField label="Homework Date *" value={homeworkDate} onChange={setHomeworkDate} placeholder="YYYY-MM-DD" type="date" />
                 <FormField label="Due Date" value={homeworkDueDate} onChange={setHomeworkDueDate} placeholder="Optional" type="date" />
               </div>
+              <label style={styles.label}>Assign to Students</label>
+              <div style={styles.studentPicker}>
+                <div style={styles.pickerToolbar}>
+                  <button type="button" style={styles.secondaryButton} onClick={() => setHomeworkAssignedStudents(students.filter(s => s.studentId && (!homeworkClass || s.className === homeworkClass) && (!homeworkBatch || s.batch === homeworkBatch)).map(s => s.studentId!))}>Select all matching</button>
+                  <button type="button" style={styles.secondaryButton} onClick={() => setHomeworkAssignedStudents([])}>Clear</button>
+                </div>
+                <div style={styles.studentPickerGrid}>
+                  {students.filter(s => (!homeworkClass || s.className === homeworkClass) && (!homeworkBatch || s.batch === homeworkBatch)).map(s => s.studentId ? (
+                    <label key={s.studentId} style={styles.studentPickerItem}><input type="checkbox" checked={homeworkAssignedStudents.includes(s.studentId)} onChange={(e) => setHomeworkAssignedStudents(prev => e.target.checked ? [...prev, s.studentId!] : prev.filter(id => id !== s.studentId))} /> <span>{s.name} <small>({s.className}{s.batch ? ` · ${s.batch}` : ""})</small></span></label>
+                  ) : null)}
+                </div>
+                <p style={styles.muted}>If no student is selected, the homework is assigned to the whole selected class/batch.</p>
+              </div>
+
               <label style={styles.label}>Homework / Instructions *</label>
               <textarea
                 style={{ ...styles.input, minHeight: 130, resize: "vertical" }}
@@ -1972,6 +2267,11 @@ export default function App() {
                   <h3 style={{ margin: "8px 0 4px" }}>{item.subject ? `${item.subject}: ` : ""}{item.title}</h3>
                   <p style={{ margin: "0 0 8px", whiteSpace: "pre-wrap" }}>{item.description}</p>
                   {item.dueDate && <div style={styles.muted}>Due: {item.dueDate}</div>}
+                  <div style={styles.completionSummary}><strong>{homeworkDefaulters(item).length}</strong> not completed · <strong>{students.filter(s => s.studentId && homeworkForStudent(s).some(h => h.id === item.id)).length}</strong> assigned</div>
+                  <div style={styles.defaulterList}>
+                    {students.filter(s => s.studentId && homeworkForStudent(s).some(h => h.id === item.id)).map(s => { const done = Boolean(((item as any).completion || {})[s.studentId!]); return <button key={s.studentId} type="button" style={done ? styles.doneStudentButton : styles.notDoneStudentButton} onClick={async () => { if (!isAdmin || !item.id) return; const next = { ...(((item as any).completion || {}) as Record<string, boolean>), [s.studentId!]: !done }; await updateHomework(item.id, { ...(item as any), completion: next }); await loadHomework(); }}>{done ? "✓" : "○"} {s.name}</button>; })}
+                  </div>
+                  {homeworkDefaulters(item).length > 0 && <div style={styles.warningBox}>⚠ Homework Defaulters: {homeworkDefaulters(item).map(s => s.name).join(", ")}</div>}
                   <div style={styles.formActions}>
                     <button style={styles.editButton} onClick={() => openEditHomework(item)}>✏️ Edit</button>
                     <button style={styles.deleteButton} onClick={() => removeHomework(item)}>🗑️ Delete</button>
@@ -2557,6 +2857,44 @@ export default function App() {
   };
 
   /* =========================================================
+     TESTS PAGE
+  ========================================================= */
+  const testsPage = () => {
+    const averages = studentAverageMap();
+    const ranking = students.map(s => ({ ...s, computedAverage: averages[s.studentId || ""] || 0 })).sort((a,b) => b.computedAverage - a.computedAverage);
+    return <>
+      <div style={styles.pageHeader}><div><h1>📝 Tests & Results</h1><p style={styles.muted}>Create tests, enter marks, upload papers and rank every student across every class.</p></div>{isAdmin && <button style={styles.primaryButtonSmall} onClick={openAddTest}>➕ Create Test</button>}</div>
+      {testMessage && <div style={testMessage.includes("successfully") ? styles.successBox : styles.errorBox}>{testMessage}</div>}
+      {showTestForm && <div style={styles.card}><div style={styles.formHeader}><div><h2>{editingTest ? "✏️ Edit Test" : "➕ New Test"}</h2><p style={styles.muted}>Marks and percentages update automatically.</p></div><button style={styles.closeButton} onClick={resetTestForm}>✕</button></div>
+        <form onSubmit={saveTest}><div style={styles.formGrid}><FormField label="Test Name *" value={testName} onChange={setTestName} placeholder="Unit Test 1"/><FormField label="Subject *" value={testSubject} onChange={setTestSubject} placeholder="Mathematics"/><FormField label="Class" value={testClass} onChange={setTestClass} placeholder="All classes" type="select" options={[{label:"All classes",value:""}, ...Array.from(new Set(students.map(s=>s.className).filter(Boolean))).map(v=>({label:v as string,value:v as string}))]}/><FormField label="Batch" value={testBatch} onChange={setTestBatch} placeholder="All batches"/><FormField label="Test Date *" value={testDate} onChange={setTestDate} type="date"/><FormField label="Total Marks *" value={testTotal} onChange={setTestTotal} type="number"/></div>
+          <div style={styles.uploadGrid}><label style={styles.uploadBox}>📄 Question Paper<input type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png" onChange={e=>setTestQuestionFile(e.target.files?.[0] || null)}/><small>{testQuestionFile?.name || editingTest?.questionPaperName || "Choose file"}</small></label><label style={styles.uploadBox}>📝 Answer Sheet / Solution<input type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png" onChange={e=>setTestAnswerFile(e.target.files?.[0] || null)}/><small>{testAnswerFile?.name || editingTest?.answerSheetName || "Choose file"}</small></label></div>
+          <h3 style={{marginTop:24}}>Student Marks & Attendance</h3><div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Present?</th><th style={styles.th}>Marks / {Number(testTotal)||0}</th><th style={styles.th}>%</th></tr></thead><tbody>{students.filter(s=>(!testClass || s.className===testClass)&&(!testBatch || s.batch===testBatch)).map(s=>{if(!s.studentId)return null; const r=testResults[s.studentId]||{present:true,marks:null}; const pct=r.present&&r.marks!=null?(Number(r.marks)/Number(testTotal||1))*100:null; return <tr key={s.studentId}><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}><input type="checkbox" checked={r.present!==false} onChange={e=>setTestResults(prev=>({...prev,[s.studentId!]:{...r,present:e.target.checked,marks:e.target.checked?r.marks:null}}))}/> {r.present===false?"Absent":"Present"}</td><td style={styles.td}><input style={styles.compactInput} type="number" min="0" max={Number(testTotal)||0} disabled={r.present===false} value={r.marks ?? ""} onChange={e=>setTestResults(prev=>({...prev,[s.studentId!]:{...r,present:true,marks:e.target.value===""?null:Number(e.target.value)}}))}/></td><td style={styles.td}>{pct==null?"-":`${pct.toFixed(1)}%`}</td></tr>})}</tbody></table></div>
+          <div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={resetTestForm}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingTest}>{savingTest?"Saving...":"💾 Save Test & Results"}</button></div>
+        </form></div>}
+      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📚 Test Library</h2><p style={styles.muted}>{tests.length} test{tests.length===1?"":"s"} published</p></div></div>{testsLoading?<div style={styles.emptyBox}>Loading tests...</div>:tests.length===0?<div style={styles.emptyBox}>No tests created yet.</div>:tests.map(test=>{const results=Object.values(test.results||{}) as TestResult[];const present=results.filter(r=>r?.present).length;const entered=results.filter(r=>r?.present&&r?.marks!=null);const avg=entered.length?entered.reduce((sum,r)=>sum+(Number(r.marks)/Number(test.total||1))*100,0)/entered.length:0;return <div key={test.id} style={styles.testCard}><div><div style={styles.homeworkMeta}><strong>{test.subject} · {test.name}</strong><span>{test.date}</span></div><p style={styles.muted}>{test.className||"All classes"}{test.batch?` · ${test.batch}`:""} · {present} present · {entered.length} marks entered · Test average {avg.toFixed(1)}%</p></div><div style={styles.linkRow}>{test.questionPaperUrl&&<a style={styles.linkButton} href={test.questionPaperUrl} target="_blank" rel="noreferrer">📄 Question Paper</a>}{test.answerSheetUrl&&<a style={styles.linkButton} href={test.answerSheetUrl} target="_blank" rel="noreferrer">📝 Answer Sheet</a>}{isAdmin&&<><button style={styles.editButton} onClick={()=>openEditTest(test)}>✏️ Edit</button><button style={styles.deleteButton} onClick={()=>deleteTest(test)}>🗑️ Delete</button></>}</div></div>})}</div>
+      <div style={styles.card}><h2>🏆 Overall Ranking · All Classes</h2><p style={styles.muted}>Average percentage across tests where the student was present and marks were entered.</p><div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Rank</th><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Tests Counted</th><th style={styles.th}>Average %</th></tr></thead><tbody>{ranking.filter(s=>s.computedAverage>0).map((s,i)=><tr key={s.studentId||s.id}><td style={styles.td}><strong>#{i+1}</strong></td><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}>{tests.filter(t=>{const r=(t.results||{})[s.studentId||""];return r?.present&&r.marks!=null}).length}</td><td style={styles.td}><strong>{s.computedAverage.toFixed(2)}%</strong></td></tr>)}</tbody></table></div></div>
+    </>;
+  };
+
+  const attendancePage = () => {
+    const selected = attendanceDays.find(a=>a.date===attendanceDate);
+    const historyForStudent = (sid:string) => attendanceDays.filter(d=>d.records?.[sid]).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+    return <>
+      <div style={styles.pageHeader}><div><h1>📅 Attendance</h1><p style={styles.muted}>Daily present/absent register with student-wise history.</p></div>{isAdmin&&<div style={{display:"flex",gap:8}}><button style={styles.secondaryButton} onClick={()=>setAllAttendance("present")}>✓ Mark All Present</button><button style={styles.secondaryButton} onClick={()=>setAllAttendance("absent")}>✕ Mark All Absent</button><button style={styles.primaryButtonSmall} onClick={saveAttendance}>💾 Save Attendance</button></div>}</div>
+      {attendanceMessage&&<div style={attendanceMessage.includes("successfully")?styles.successBox:styles.errorBox}>{attendanceMessage}</div>}
+      <div style={styles.card}><div style={styles.formGrid}><FormField label="Attendance Date" value={attendanceDate} onChange={(v)=>{setAttendanceDate(v);const row=attendanceDays.find(a=>a.date===v);setAttendanceRecords(row?.records||{});}} type="date"/></div>{attendanceLoading?<div style={styles.emptyBox}>Loading attendance...</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Batch</th><th style={styles.th}>Status</th></tr></thead><tbody>{students.map(s=>s.studentId?<tr key={s.studentId}><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}>{s.batch||"-"}</td><td style={styles.td}><button disabled={!isAdmin} style={(attendanceRecords[s.studentId]||"absent")==="present"?styles.doneStudentButton:styles.notDoneStudentButton} onClick={()=>setAttendanceRecords(prev=>({...prev,[s.studentId!]:prev[s.studentId!]==="present"?"absent":"present"}))}>{(attendanceRecords[s.studentId]||"absent")==="present"?"✓ Present":"○ Absent"}</button></td></tr>:null)}</tbody></table></div>}</div>
+      <div style={styles.card}><h2>📊 Attendance Summary</h2><div style={styles.grid}>{students.map(s=>{if(!s.studentId)return null;const rows=historyForStudent(s.studentId);const present=rows.filter(r=>r.records?.[s.studentId]==="present").length;const pct=rows.length?present/rows.length*100:0;return <div key={s.studentId} style={styles.summaryMiniCard}><strong>{s.name}</strong><span>{s.className}</span><b>{pct.toFixed(0)}%</b><small>{present}/{rows.length} days present</small></div>})}</div></div>
+    </>;
+  };
+
+  const noticesPage = () => <>
+    <div style={styles.pageHeader}><div><h1>📢 Notice Board</h1><p style={styles.muted}>Publish clear, dated announcements for every student.</p></div></div>
+    {noticeStatus&&<div style={noticeStatus.includes("successfully")?styles.successBox:styles.errorBox}>{noticeStatus}</div>}
+    {isAdmin&&<div style={styles.card}><h2>➕ Publish Notice</h2><form onSubmit={saveNotice}><div style={styles.formGrid}><FormField label="Title *" value={noticeTitle} onChange={setNoticeTitle} placeholder="Holiday Notice"/><FormField label="Date" value={noticeDate} onChange={setNoticeDate} type="date"/><FormField label="Priority" value={noticePriority} onChange={v=>setNoticePriority(v as any)} type="select" options={[{label:"Normal",value:"normal"},{label:"Important",value:"important"},{label:"Urgent",value:"urgent"}]}/></div><label style={styles.label}>Message *</label><textarea style={{...styles.input,minHeight:120,resize:"vertical"}} value={noticeMessage} onChange={e=>setNoticeMessage(e.target.value)} placeholder="Write the announcement..." required/><div style={styles.formActions}><button type="submit" style={styles.primaryButtonSmall} disabled={noticeSaving}>{noticeSaving?"Publishing...":"📢 Publish Notice"}</button></div></form></div>}
+    <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📌 Published Notices</h2><p style={styles.muted}>{notices.length} notice{notices.length===1?"":"s"}</p></div></div>{notices.length===0?<div style={styles.emptyBox}>No notices published yet.</div>:notices.map(n=><div key={n.id} style={styles.noticeItem}><div style={styles.homeworkMeta}><strong>{n.title}</strong><span>{n.date}</span></div><span style={styles.noticeBadge}>{(n.priority||"normal").toUpperCase()}</span><p style={{whiteSpace:"pre-wrap",margin:"10px 0 0"}}>{n.message}</p>{isAdmin&&<div style={styles.formActions}><button style={styles.deleteButton} onClick={()=>deleteNotice(n)}>🗑️ Delete</button></div>}</div>)}</div>
+  </>;
+
+  /* =========================================================
      SIMPLE PAGES
   ========================================================= */
 
@@ -2687,22 +3025,15 @@ export default function App() {
           {page === "teachers" &&
             simplePage("Teachers", "👨‍🏫", "Manage teachers and batches")}
 
-          {page === "tests" &&
-            simplePage(
-              "Tests & Results",
-              "📝",
-              "Create tests, enter marks and calculate rankings"
-            )}
+          {page === "tests" && testsPage()}
 
-          {page === "attendance" &&
-            simplePage("Attendance", "📅", "Manage daily student attendance")}
+          {page === "attendance" && attendancePage()}
 
           {page === "fees" && feesPage()}
 
           {page === "homework" && isAdmin && homeworkPage()}
 
-          {page === "notices" &&
-            simplePage("Notices", "📢", "Publish notices for students")}
+          {page === "notices" && noticesPage()}
         </main>
       </div>
     </div>
@@ -2814,8 +3145,8 @@ const styles: {
     display: "flex",
     justifyContent: "center",
     alignItems: "center",
-    background: "#f5f7fb",
-    fontFamily: "Arial, sans-serif",
+    background: "radial-gradient(circle at top right, #eef2ff 0, #f8fafc 34%, #f1f5f9 100%)",
+    fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
   },
 
   loadingCard: {
@@ -3012,13 +3343,13 @@ const styles: {
 
   appPage: {
     minHeight: "100vh",
-    background: "#f5f7fb",
+    background: "radial-gradient(circle at 100% 0%, #eef2ff 0, #f8fafc 35%, #eef2f7 100%)",
     fontFamily: "Arial, sans-serif",
   },
 
   topbar: {
-    minHeight: 70,
-    background: "white",
+    minHeight: 74,
+    background: "rgba(255,255,255,0.92)",
     borderBottom: "1px solid #e5e7eb",
     display: "flex",
     alignItems: "center",
@@ -3040,7 +3371,7 @@ const styles: {
 
   sidebar: {
     width: 220,
-    background: "#111827",
+    background: "linear-gradient(180deg,#0f172a,#111827 55%,#172554)",
     padding: 15,
     boxSizing: "border-box",
   },
@@ -3062,7 +3393,7 @@ const styles: {
     width: "100%",
     textAlign: "left",
     border: "none",
-    background: "#2563eb",
+    background: "linear-gradient(135deg,#4f46e5,#2563eb)",
     color: "white",
     padding: "12px 13px",
     borderRadius: 8,
@@ -3129,7 +3460,8 @@ const styles: {
     borderRadius: 14,
     padding: 22,
     marginBottom: 22,
-    boxShadow: "0 4px 15px rgba(0,0,0,0.05)",
+    boxShadow: "0 12px 30px rgba(15,23,42,0.07)",
+    border: "1px solid rgba(148,163,184,0.16)",
   },
 
   studentWelcome: {
@@ -3279,4 +3611,26 @@ const styles: {
     borderBottom: "1px solid #e5e7eb",
     fontSize: 14,
   },
+
+  sectionTitleRow:{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12},
+  noticeItem:{border:"1px solid #e5e7eb",borderRadius:12,padding:16,marginBottom:12,background:"#fff"},
+  noticeBadge:{display:"inline-block",padding:"5px 9px",borderRadius:999,background:"#eef2ff",color:"#3730a3",fontSize:11,fontWeight:800,letterSpacing:.5},
+  doneBadge:{display:"inline-block",padding:"6px 9px",borderRadius:999,background:"#dcfce7",color:"#166534",fontWeight:800,fontSize:12},
+  studentPicker:{border:"1px solid #e5e7eb",borderRadius:12,padding:12,background:"#fafafa"},
+  pickerToolbar:{display:"flex",gap:8,marginBottom:10},
+  studentPickerGrid:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:8,maxHeight:220,overflowY:"auto"},
+  studentPickerItem:{display:"flex",alignItems:"center",gap:8,padding:9,border:"1px solid #e5e7eb",borderRadius:9,background:"white",cursor:"pointer"},
+  completionSummary:{marginTop:12,padding:"10px 12px",borderRadius:9,background:"#f8fafc",fontSize:13},
+  defaulterList:{display:"flex",flexWrap:"wrap",gap:7,marginTop:10},
+  doneStudentButton:{border:"1px solid #bbf7d0",borderRadius:999,padding:"7px 10px",background:"#f0fdf4",color:"#166534",fontWeight:700,cursor:"pointer"},
+  notDoneStudentButton:{border:"1px solid #fecaca",borderRadius:999,padding:"7px 10px",background:"#fef2f2",color:"#991b1b",fontWeight:700,cursor:"pointer"},
+  warningBox:{marginTop:10,padding:12,borderRadius:10,background:"#fff7ed",color:"#9a3412",fontWeight:600,lineHeight:1.5},
+  uploadGrid:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:12,marginTop:16},
+  uploadBox:{display:"flex",flexDirection:"column",gap:8,border:"1px dashed #cbd5e1",borderRadius:12,padding:16,background:"#f8fafc",fontWeight:700,cursor:"pointer"},
+  testCard:{border:"1px solid #e5e7eb",borderRadius:14,padding:16,marginBottom:12,background:"#fff",display:"flex",justifyContent:"space-between",gap:16,flexWrap:"wrap"},
+  linkRow:{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"},
+  linkButton:{display:"inline-block",textDecoration:"none",border:"1px solid #c7d2fe",borderRadius:8,padding:"8px 11px",background:"#eef2ff",color:"#3730a3",fontWeight:700,fontSize:13},
+  deleteButton:{border:"none",borderRadius:7,padding:"8px 12px",background:"#dc2626",color:"white",fontWeight:700,cursor:"pointer"},
+  compactInput:{width:100,padding:"8px 9px",border:"1px solid #d1d5db",borderRadius:8,boxSizing:"border-box"},
+  summaryMiniCard:{background:"linear-gradient(135deg,#fff,#f8fafc)",border:"1px solid #e5e7eb",borderRadius:14,padding:15,display:"flex",flexDirection:"column",gap:5},
 };
