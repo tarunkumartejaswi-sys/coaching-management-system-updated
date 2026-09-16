@@ -186,12 +186,24 @@ export const ensureCurrentMonthFee = async (student) => {
 
 /** @returns {Promise<Fee[]>} */
 export const getAllFees = async () => {
-  const snapshot = await getDocs(collectionGroup(db, "months"));
-
-  return snapshot.docs.map((item) => ({
-    id: item.id,
-    ...item.data(),
-  }));
+  // Read each student's month subcollection explicitly. This is more
+  // reliable with Firestore security rules than a collectionGroup query.
+  const studentsSnapshot = await getDocs(collection(db, "students"));
+  const groups = await Promise.all(
+    studentsSnapshot.docs.map(async (studentDoc) => {
+      const monthSnapshot = await getDocs(
+        query(
+          collection(db, "fees", studentDoc.id, "months"),
+          orderBy("monthId", "desc")
+        )
+      );
+      return monthSnapshot.docs.map((item) => ({
+        id: item.id,
+        ...item.data(),
+      }));
+    })
+  );
+  return groups.flat();
 };
 
 export const recordFeePayment = async (

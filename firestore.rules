@@ -20,6 +20,18 @@ service cloud.firestore {
 
     match /students/{studentId} {
       allow read: if isAdmin() || (signedIn() && resource.data.authUid == request.auth.uid);
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() ||
+        (signedIn() &&
+         resource.data.authUid == request.auth.uid &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+           "name", "fatherName", "motherName", "address", "mobile",
+           "dob", "gender", "photoUrl"
+         ]));
+    }
+
+    match /director/{directorId} {
+      allow read: if signedIn();
       allow create, update, delete: if isAdmin();
     }
 

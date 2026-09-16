@@ -1,24 +1,41 @@
-# Admin credential setup
+# Coaching Management System - Final Setup
 
-The Admin -> Students -> Change Login feature changes the real Firebase Authentication account.
-It requires these Vercel server-side environment variables:
+## 1. Deploy from the repository root
+Upload the contents of this ZIP to the ROOT of your GitHub repository. Do not upload the whole `cmf10_final` folder and do not keep older `cmf10`, `CMF 11`, or nested app copies.
 
-- FIREBASE_PROJECT_ID
-- FIREBASE_CLIENT_EMAIL
-- FIREBASE_PRIVATE_KEY
+The root must contain `package.json`, `index.html`, `src/`, `firebase/`, and `api/`.
 
-Create/download a Firebase service-account key for the same Firebase project and copy its `project_id`, `client_email`, and `private_key` into Vercel Environment Variables. Do not commit the service-account JSON file to GitHub and do not paste the private key into chat.
+## 2. Vercel
+Import/connect the GitHub repository. Vercel should detect Vite automatically.
 
-The frontend calls `/api/admin-student-account`. The API verifies the logged-in Firebase ID token, checks the `users/{uid}` profile has `role: "admin"`, and only then updates the selected student's Firebase Auth password/email.
+Build command: `npm run build`
+Output directory: `dist`
 
-## Academic Modules Added
-- Homework can be assigned to selected students or a whole class/batch. Admin can click each student to toggle Done / Not Done. Homework defaulters are visible in admin and student dashboards.
-- Tests & Results supports test creation, class/batch selection, student-wise present/absent, marks, automatic percentage, all-class ranking, and optional Question Paper / Answer Sheet uploads.
-- Attendance supports daily date-based present/absent marking and student-wise attendance history.
-- Notices supports dated priority announcements for all students.
+## 3. Admin direct password/email change
+The Admin -> Students -> Change Login button changes the REAL Firebase Authentication account through `/api/admin-student-account`.
 
-## Firebase Storage
-Enable Firebase Storage in the Firebase project. Deploy `storage.rules` from Firebase Console or Firebase CLI so admins can upload test question papers and answer sheets.
+Vercel Environment Variables required:
+- `FIREBASE_PROJECT_ID`
+- `FIREBASE_CLIENT_EMAIL`
+- `FIREBASE_PRIVATE_KEY`
 
-## Vercel Admin Password Change
-The admin credential API requires `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, and `FIREBASE_PRIVATE_KEY` environment variables in Vercel. These must be configured in Vercel Project Settings → Environment Variables.
+Use the Firebase service-account values. Keep the private key only in Vercel environment variables, never in frontend code.
+
+## 4. Firebase
+Deploy both Firestore rules and Storage rules from `firestore.rules` and `storage.rules`.
+
+The application uses Firebase Authentication, Firestore and Storage for students, fees, homework, tests, attendance, notices, director profile, and uploaded academic files.
+
+## 5. Final features
+- Premium responsive Admin dashboard
+- Student dashboard with profile/photo editing
+- Director profile and photo, editable by Admin only
+- Teacher directory with add/edit/delete
+- Tests & Results with class/batch, per-student present/absent, marks, percentage, average and all-class ranking
+- Question paper and answer-sheet uploads
+- Homework class/batch assignment plus individual student selection and completion tracking
+- Homework defaulters
+- Daily attendance and student monthly green/red calendar
+- Professional notices
+- Monthly fees, payment history, dues and previous-month records
+- Admin direct login credential change

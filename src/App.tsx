@@ -55,6 +55,13 @@ type Student = {
   monthlyFee?: number;
   feeDue?: number;
   authUid?: string;
+  photoUrl?: string;
+  fatherName?: string;
+  motherName?: string;
+  address?: string;
+  mobile?: string;
+  dob?: string;
+  gender?: string;
 };
 
 type Payment = {
@@ -120,6 +127,16 @@ type AttendanceDay = {
   createdAt?: string;
 };
 
+type Director = {
+  name?: string;
+  title?: string;
+  mobile?: string;
+  email?: string;
+  address?: string;
+  message?: string;
+  photoUrl?: string;
+};
+
 type Notice = {
   id?: string;
   title?: string;
@@ -128,6 +145,16 @@ type Notice = {
   priority?: "normal" | "important" | "urgent";
   audience?: string;
   createdAt?: string;
+};
+
+type Teacher = {
+  id?: string;
+  name?: string;
+  subject?: string;
+  className?: string;
+  batch?: string;
+  mobile?: string;
+  email?: string;
 };
 
 /* =========================================================
@@ -144,6 +171,16 @@ export default function App() {
 
   const [students, setStudents] = useState<Student[]>([]);
   const [directoryStudents, setDirectoryStudents] = useState<Student[]>([]);
+  const [director, setDirector] = useState<Director | null>(null);
+  const [showStudentProfile, setShowStudentProfile] = useState(false);
+  const [profileDraft, setProfileDraft] = useState<Student>({});
+  const [profilePhotoFile, setProfilePhotoFile] = useState<File | null>(null);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileMessage, setProfileMessage] = useState("");
+  const [directorForm, setDirectorForm] = useState<Director>({ name: "", title: "Director", mobile: "", email: "", address: "", message: "" });
+  const [directorPhotoFile, setDirectorPhotoFile] = useState<File | null>(null);
+  const [directorSaving, setDirectorSaving] = useState(false);
+  const [directorMessage, setDirectorMessage] = useState("");
 
   const [fees, setFees] = useState<Fee[]>([]);
   const [studentFee, setStudentFee] = useState<Fee | null>(null);
@@ -203,6 +240,8 @@ export default function App() {
      TESTS & RESULTS
   ========================================================= */
   const [tests, setTests] = useState<Test[]>([]);
+  const [testLibraryClass, setTestLibraryClass] = useState("");
+  const [testLibrarySubject, setTestLibrarySubject] = useState("");
   const [testsLoading, setTestsLoading] = useState(false);
   const [testMessage, setTestMessage] = useState("");
   const [showTestForm, setShowTestForm] = useState(false);
@@ -225,6 +264,7 @@ export default function App() {
   const [attendanceDate, setAttendanceDate] = useState(new Date().toISOString().slice(0, 10));
   const [attendanceRecords, setAttendanceRecords] = useState<Record<string, "present" | "absent">>({});
   const [attendanceMessage, setAttendanceMessage] = useState("");
+  const [studentCalendarMonth, setStudentCalendarMonth] = useState(new Date().toISOString().slice(0, 7));
   const [attendanceLoading, setAttendanceLoading] = useState(false);
 
   /* =========================================================
@@ -237,6 +277,18 @@ export default function App() {
   const [noticeDate, setNoticeDate] = useState(new Date().toISOString().slice(0, 10));
   const [noticeSaving, setNoticeSaving] = useState(false);
   const [noticeStatus, setNoticeStatus] = useState("");
+
+  /* TEACHERS */
+  const [teachers, setTeachers] = useState<Teacher[]>([]);
+  const [showTeacherForm, setShowTeacherForm] = useState(false);
+  const [editingTeacher, setEditingTeacher] = useState<Teacher | null>(null);
+  const [teacherName, setTeacherName] = useState("");
+  const [teacherSubject, setTeacherSubject] = useState("");
+  const [teacherClass, setTeacherClass] = useState("");
+  const [teacherBatch, setTeacherBatch] = useState("");
+  const [teacherMobile, setTeacherMobile] = useState("");
+  const [teacherEmail, setTeacherEmail] = useState("");
+  const [teacherMessage, setTeacherMessage] = useState("");
 
   const [homeworkAssignedStudents, setHomeworkAssignedStudents] = useState<string[]>([]);
   const [homeworkCompletion, setHomeworkCompletion] = useState<Record<string, boolean>>({});
@@ -546,6 +598,73 @@ export default function App() {
 
   const [editMessage, setEditMessage] = useState("");
 
+  const loadDirector = async () => {
+    try {
+      const snap = await getDocs(collection(db, "director"));
+      const row = snap.docs[0];
+      if (row) {
+        const data = { ...(row.data() as Director) };
+        setDirector(data);
+        setDirectorForm(data);
+      }
+    } catch (error) {
+      console.error("Director loading error:", error);
+    }
+  };
+
+  const saveStudentProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (profile?.role !== "student" || !studentData?.studentId) return;
+    setProfileSaving(true);
+    setProfileMessage("");
+    try {
+      let photoUrl = profileDraft.photoUrl || "";
+      if (profilePhotoFile) {
+        photoUrl = await uploadAcademicFile(profilePhotoFile, `students/${studentData.studentId}/profile`);
+      }
+      const allowed = {
+        name: (profileDraft.name || "").trim(),
+        fatherName: (profileDraft.fatherName || "").trim(),
+        motherName: (profileDraft.motherName || "").trim(),
+        address: (profileDraft.address || "").trim(),
+        mobile: (profileDraft.mobile || "").trim(),
+        dob: profileDraft.dob || "",
+        gender: profileDraft.gender || "",
+        photoUrl,
+      };
+      await updateDoc(doc(db, "students", studentData.studentId), allowed);
+      const updated = await getStudentById(studentData.studentId);
+      setStudentData(updated);
+      setProfileMessage("Profile updated successfully! ✅");
+      setProfilePhotoFile(null);
+    } catch (error: any) {
+      setProfileMessage(`Unable to update profile: ${error?.message || "Unknown error"}`);
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  const saveDirector = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isAdmin) return;
+    setDirectorSaving(true);
+    setDirectorMessage("");
+    try {
+      let photoUrl = directorForm.photoUrl || "";
+      if (directorPhotoFile) photoUrl = await uploadAcademicFile(directorPhotoFile, "director/profile");
+      const payload = { ...directorForm, name: (directorForm.name || "").trim(), title: (directorForm.title || "Director").trim(), photoUrl, updatedAt: new Date().toISOString() };
+      await setDoc(doc(db, "director", "profile"), payload, { merge: true });
+      setDirector(payload);
+      setDirectorForm(payload);
+      setDirectorPhotoFile(null);
+      setDirectorMessage("Director details saved successfully! ✅");
+    } catch (error: any) {
+      setDirectorMessage(`Unable to save director details: ${error?.message || "Unknown error"}`);
+    } finally {
+      setDirectorSaving(false);
+    }
+  };
+
   /* =========================================================
      AUTH LISTENER
   ========================================================= */
@@ -574,6 +693,8 @@ export default function App() {
           const ownStudent = await getStudentById(userProfile.studentId);
 
           setStudentData(ownStudent);
+          setProfileDraft(ownStudent || {});
+          await loadDirector();
 
           const ownFee = await getFeeByStudentId(userProfile.studentId);
 
@@ -588,6 +709,8 @@ export default function App() {
           setDirectoryStudents(directorySnapshot.docs.map((item: any) => ({ id: item.id, ...item.data() })) as Student[]);
           setHomework(await getHomework());
         } else {
+          await loadDirector();
+          await loadTeachers();
           const allStudents = await getStudents();
 
           setStudents(allStudents);
@@ -642,6 +765,9 @@ export default function App() {
     setStudentFee(null);
     setStudentFeeHistory([]);
     setStudents([]);
+    setProfileDraft({});
+    setProfilePhotoFile(null);
+    setShowStudentProfile(false);
   };
 
   /* =========================================================
@@ -984,6 +1110,49 @@ export default function App() {
   useEffect(() => {
     if (page === "homework" && isAdmin) loadHomework();
   }, [page, isAdmin]);
+
+  /* =========================================================
+     TEACHERS
+  ========================================================= */
+  const loadTeachers = async () => {
+    try {
+      const snapshot = await getDocs(collection(db, "teachers"));
+      setTeachers(snapshot.docs.map((item: any) => ({ id: item.id, ...item.data() })) as Teacher[]);
+    } catch (error: any) {
+      console.error("Teacher loading error:", error);
+      setTeacherMessage(`Unable to load teachers: ${error?.message || "Unknown error"}`);
+    }
+  };
+
+  const resetTeacherForm = () => {
+    setShowTeacherForm(false); setEditingTeacher(null); setTeacherName(""); setTeacherSubject("");
+    setTeacherClass(""); setTeacherBatch(""); setTeacherMobile(""); setTeacherEmail("");
+  };
+
+  const openAddTeacher = () => { resetTeacherForm(); setTeacherMessage(""); setShowTeacherForm(true); };
+  const openEditTeacher = (t: Teacher) => {
+    setEditingTeacher(t); setTeacherName(t.name || ""); setTeacherSubject(t.subject || "");
+    setTeacherClass(t.className || ""); setTeacherBatch(t.batch || ""); setTeacherMobile(t.mobile || "");
+    setTeacherEmail(t.email || ""); setTeacherMessage(""); setShowTeacherForm(true);
+  };
+
+  const saveTeacher = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isAdmin) return;
+    if (!teacherName.trim() || !teacherSubject.trim()) { setTeacherMessage("Enter teacher name and subject."); return; }
+    try {
+      const payload = { name: teacherName.trim(), subject: teacherSubject.trim(), className: teacherClass.trim(), batch: teacherBatch.trim(), mobile: teacherMobile.trim(), email: teacherEmail.trim(), updatedAt: new Date().toISOString() };
+      if (editingTeacher?.id) await setDoc(doc(db, "teachers", editingTeacher.id), payload, { merge: true });
+      else await setDoc(doc(collection(db, "teachers")), { ...payload, createdAt: new Date().toISOString() });
+      await loadTeachers(); setTeacherMessage("Teacher saved successfully! ✅"); setTimeout(resetTeacherForm, 500);
+    } catch (error: any) { setTeacherMessage(`Unable to save teacher: ${error?.message || "Unknown error"}`); }
+  };
+
+  const deleteTeacher = async (t: Teacher) => {
+    if (!isAdmin || !t.id || !window.confirm(`Delete ${t.name || "this teacher"}?`)) return;
+    try { await deleteDoc(doc(db, "teachers", t.id)); await loadTeachers(); setTeacherMessage("Teacher deleted."); }
+    catch (error: any) { setTeacherMessage(`Unable to delete teacher: ${error?.message || "Unknown error"}`); }
+  };
 
   /* =========================================================
      SHARED ACADEMIC DATA
@@ -1468,6 +1637,23 @@ export default function App() {
         </header>
 
         <main style={styles.main}>
+          {showStudentProfile && <div style={styles.card}>
+            <div style={styles.formHeader}><div><h2>👤 Edit My Profile</h2><p style={styles.muted}>Update your personal information. Academic records remain controlled by admin.</p></div><button style={styles.closeButton} onClick={() => setShowStudentProfile(false)}>✕</button></div>
+            <form onSubmit={saveStudentProfile}>
+              <div style={styles.formGrid}>
+                <FormField label="Student Name" value={profileDraft.name || ""} onChange={v=>setProfileDraft(p=>({...p,name:v}))} />
+                <FormField label="Father's Name" value={profileDraft.fatherName || ""} onChange={v=>setProfileDraft(p=>({...p,fatherName:v}))} required={false} />
+                <FormField label="Mother's Name" value={profileDraft.motherName || ""} onChange={v=>setProfileDraft(p=>({...p,motherName:v}))} required={false} />
+                <FormField label="Mobile Number" value={profileDraft.mobile || ""} onChange={v=>setProfileDraft(p=>({...p,mobile:v}))} required={false} />
+                <FormField label="Date of Birth" value={profileDraft.dob || ""} onChange={v=>setProfileDraft(p=>({...p,dob:v}))} type="date" required={false} />
+                <FormField label="Gender" value={profileDraft.gender || ""} onChange={v=>setProfileDraft(p=>({...p,gender:v}))} type="select" required={false} options={[{label:"Select",value:""},{label:"Male",value:"Male"},{label:"Female",value:"Female"},{label:"Other",value:"Other"}]} />
+              </div>
+              <label style={styles.label}>Address</label><textarea style={{...styles.input,minHeight:80}} value={profileDraft.address || ""} onChange={e=>setProfileDraft(p=>({...p,address:e.target.value}))} />
+              <label style={styles.uploadBox}>📷 Profile Picture<input type="file" accept="image/*" onChange={e=>setProfilePhotoFile(e.target.files?.[0] || null)} /><small>{profilePhotoFile?.name || "Choose a photo"}</small></label>
+              {profileMessage && <div style={profileMessage.includes("successfully") ? styles.successBox : styles.errorBox}>{profileMessage}</div>}
+              <div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={()=>setShowStudentProfile(false)}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={profileSaving}>{profileSaving?"Saving...":"💾 Save Profile"}</button></div>
+            </form>
+          </div>}
           <div style={styles.studentWelcome}>
             <h1>Welcome, {studentData?.name || profile.name}! 👋</h1>
 
@@ -1479,11 +1665,7 @@ export default function App() {
           <div style={styles.grid}>
             <StatCard
               title="My Average"
-              value={
-                studentData?.average !== undefined
-                  ? `${studentData.average}%`
-                  : "N/A"
-              }
+              value={(() => { const av = studentAverageMap()[studentData?.studentId || ""] || 0; return av ? `${av.toFixed(1)}%` : "0%"; })()}
               icon="📊"
             />
 
@@ -1519,26 +1701,30 @@ export default function App() {
 
           <div style={styles.twoColumn}>
             <div style={styles.card}>
-              <h2>👤 My Information</h2>
+              <div style={styles.profileHero}>
+                <div style={styles.avatarLarge}>
+                  {studentData?.photoUrl ? <img src={studentData.photoUrl} alt="Student" style={styles.avatarImage} /> : "👤"}
+                </div>
+                <div style={{flex:1}}>
+                  <h2 style={{margin:"0 0 4px"}}>{studentData?.name || profile.name || "Student"}</h2>
+                  <p style={styles.muted}>ID: {profile.studentId || studentData?.studentId || "N/A"} · {studentData?.className || "Class not set"}</p>
+                </div>
+                <button style={styles.secondaryButton} onClick={() => { setProfileDraft(studentData || {}); setProfileMessage(""); setShowStudentProfile(true); }}>✏️ Edit Profile</button>
+              </div>
+              <InfoRow label="Father's Name" value={studentData?.fatherName || "Not added"} />
+              <InfoRow label="Mother's Name" value={studentData?.motherName || "Not added"} />
+              <InfoRow label="Mobile" value={studentData?.mobile || "Not added"} />
+              <InfoRow label="Address" value={studentData?.address || "Not added"} />
+              <InfoRow label="Email" value={profile.email || user.email || "N/A"} />
+            </div>
 
-              <InfoRow
-                label="Name"
-                value={studentData?.name || profile.name || "N/A"}
-              />
-
-              <InfoRow
-                label="Student ID"
-                value={profile.studentId || studentData?.studentId || "N/A"}
-              />
-
-              <InfoRow label="Class" value={studentData?.className || "N/A"} />
-
-              <InfoRow label="Batch" value={studentData?.batch || "N/A"} />
-
-              <InfoRow
-                label="Email"
-                value={profile.email || user.email || "N/A"}
-              />
+            <div style={styles.card}>
+              <h2>🎓 Coaching Director</h2>
+              {director ? <div style={styles.directorCard}>
+                <div style={styles.avatarDirector}>{director.photoUrl ? <img src={director.photoUrl} alt="Director" style={styles.avatarImage} /> : "🎓"}</div>
+                <div><h3 style={{margin:"0 0 4px"}}>{director.name || "Director"}</h3><p style={styles.muted}>{director.title || "Director"}</p>{director.mobile && <div>📞 {director.mobile}</div>}{director.email && <div>✉️ {director.email}</div>}{director.address && <div>📍 {director.address}</div>}</div>
+              </div> : <div style={styles.emptyBox}>Director details have not been added yet.</div>}
+              {director?.message && <div style={styles.infoNotice}>💬 {director.message}</div>}
             </div>
 
             <div style={styles.card}>
@@ -1577,13 +1763,13 @@ export default function App() {
                     ))}
                 </div>
               )}
-              {homeworkForStudent(studentData).some(item => homeworkDefaulters(item).length > 0) && <div style={styles.warningBox}><strong>⚠ Homework Defaulters</strong><div style={{marginTop:6}}>{homeworkForStudent(studentData).filter(item => homeworkDefaulters(item).length > 0).slice(0,5).map(item => <div key={item.id}>{item.title}: {homeworkDefaulters(item).map(s=>s.name).join(", ")}</div>)}</div></div>}
+              {homeworkForStudent(studentData).some(item => !((item as any).completion || {})[studentData?.studentId || ""]) && <div style={styles.warningBox}><strong>⚠ Your Pending Homework</strong><div style={{marginTop:6}}>{homeworkForStudent(studentData).filter(item => !((item as any).completion || {})[studentData?.studentId || ""]).slice(0,6).map(item => <div key={item.id}>🔴 {item.title} · Due {item.dueDate || "No due date"}</div>)}</div></div>}
             </div>
           </div>
 
           <div style={styles.card}>
-            <h2>📅 My Attendance</h2>
-            {(() => { const rows = attendanceDays.filter(d => d.records?.[studentData?.studentId || ""]); const present = rows.filter(d => d.records?.[studentData?.studentId || ""] === "present").length; const pct = rows.length ? present / rows.length * 100 : 0; return <><div style={styles.feeHistoryGrid}><div><span style={styles.smallLabel}>Present</span><strong>{present}</strong></div><div><span style={styles.smallLabel}>Absent</span><strong>{Math.max(rows.length-present,0)}</strong></div><div><span style={styles.smallLabel}>Attendance %</span><strong>{pct.toFixed(0)}%</strong></div><div><span style={styles.smallLabel}>Days Recorded</span><strong>{rows.length}</strong></div></div>{rows.length===0?<div style={styles.emptyBox}>No daily attendance has been recorded yet.</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Date</th><th style={styles.th}>Day</th><th style={styles.th}>Status</th></tr></thead><tbody>{rows.slice(0,20).map(d=><tr key={d.id}><td style={styles.td}>{d.date}</td><td style={styles.td}>{d.day}</td><td style={styles.td}>{d.records?.[studentData?.studentId || ""] === "present" ? <span style={styles.doneBadge}>✓ Present</span> : <span style={styles.pendingBadge}>Absent</span>}</td></tr>)}</tbody></table></div>}</>; })()}
+            <div className="sectionTitleRow"><div><h2 style={{margin:"0 0 4px"}}>📅 My Attendance Calendar</h2><p style={styles.muted}>Green = Present · Red = Absent</p></div></div>
+            {(() => { const sid=studentData?.studentId || ""; const rows=attendanceDays.filter(d=>d.records?.[sid]); const present=rows.filter(d=>d.records?.[sid]==="present").length; const pct=rows.length?present/rows.length*100:0; const [ys,ms]=studentCalendarMonth.split("-").map(Number); const y=ys||new Date().getFullYear(), m=(ms||new Date().getMonth()+1)-1; const first=new Date(y,m,1).getDay(); const days=new Date(y,m+1,0).getDate(); const monthKey=`${y}-${String(m+1).padStart(2,"0")}`; const map=Object.fromEntries(rows.filter(r=>(r.date||"").startsWith(monthKey)).map(r=>[Number((r.date||"").slice(-2)),r.records?.[sid]])); return <><div style={styles.feeHistoryGrid}><div><span style={styles.smallLabel}>Present</span><strong>{present}</strong></div><div><span style={styles.smallLabel}>Absent</span><strong>{Math.max(rows.length-present,0)}</strong></div><div><span style={styles.smallLabel}>Attendance</span><strong>{pct.toFixed(0)}%</strong></div><div><span style={styles.smallLabel}>Recorded Days</span><strong>{rows.length}</strong></div></div><div style={styles.calendarCard}><div style={styles.calendarToolbar}><h3 style={{margin:0}}>{new Date(y,m,1).toLocaleDateString("en-IN",{month:"long",year:"numeric"})}</h3><input style={styles.monthInput} type="month" value={studentCalendarMonth} onChange={e=>setStudentCalendarMonth(e.target.value)} /></div><div style={styles.calendarGrid}>{["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d=><div key={d} style={styles.calendarHead}>{d}</div>)}{Array.from({length:first}).map((_,i)=><div key={"e"+i}/>) }{Array.from({length:days},(_,i)=>i+1).map(day=>{const status=map[day];return <div key={day} title={status||"No record"} style={{...styles.calendarDay,...(status==="present"?styles.calendarPresent:status==="absent"?styles.calendarAbsent:{})}}>{day}</div>})}</div></div></>; })()}
           </div>
 
           <div style={styles.card}>
@@ -1697,21 +1883,20 @@ export default function App() {
   const dashboardPage = () => {
     const totalStudents = students.length;
 
-    const averageAttendance =
-      totalStudents > 0
-        ? Math.round(
-            students.reduce((sum, s) => sum + Number(s.attendance || 0), 0) /
-              totalStudents
-          )
-        : 0;
+    const attendanceValues = students.map((s) => {
+      if (!s.studentId) return 0;
+      const rows = attendanceDays.filter((d) => d.records?.[s.studentId]);
+      return rows.length ? (rows.filter((d) => d.records?.[s.studentId] === "present").length / rows.length) * 100 : 0;
+    });
+    const averageAttendance = totalStudents > 0
+      ? Math.round(attendanceValues.reduce((a, b) => a + b, 0) / totalStudents)
+      : 0;
 
-    const averageMarks =
-      totalStudents > 0
-        ? Math.round(
-            students.reduce((sum, s) => sum + Number(s.average || 0), 0) /
-              totalStudents
-          )
-        : 0;
+    const computedAverages = studentAverageMap();
+    const scoredAverages = Object.values(computedAverages).map(Number).filter(v => v > 0);
+    const averageMarks = scoredAverages.length > 0
+      ? Math.round(scoredAverages.reduce((a, b) => a + b, 0) / scoredAverages.length)
+      : 0;
 
     const totalFeesDue = students.reduce(
       (sum, s) => sum + Number(s.feeDue || 0),
@@ -1751,19 +1936,44 @@ export default function App() {
         </div>
 
         <div style={styles.card}>
+          <div style={styles.sectionTitleRow}><div><h2 style={{margin:"0 0 4px"}}>⚡ Quick Overview</h2><p style={styles.muted}>Your coaching centre at a glance.</p></div></div>
+          <div style={styles.quickGrid}>
+            {[
+              ["👨‍🎓","Students",totalStudents,"students"],
+              ["📝","Tests",tests.length,"tests"],
+              ["📅","Attendance Records",attendanceDays.length,"attendance"],
+              ["📚","Homework",homework.length,"homework"],
+              ["📢","Notices",notices.length,"notices"],
+              ["💰","Pending Fees",`₹${totalFeesDue}`,"fees"],
+            ].map(([icon,label,value,target])=><button key={String(target)} style={styles.quickAction} onClick={()=>setPage(String(target))}><span>{icon}</span><div><small>{label}</small><strong>{value}</strong></div><b>›</b></button>)}
+          </div>
+        </div>
+
+        {isAdmin && <div style={styles.card}>
+          <div style={styles.sectionTitleRow}><div><h2 style={{margin:"0 0 4px"}}>🎓 Director Profile</h2><p style={styles.muted}>Visible to every student. Only admin can edit it.</p></div></div>
+          <form onSubmit={saveDirector}>
+            <div style={styles.directorEditor}>
+              <div style={styles.avatarDirector}>{directorForm.photoUrl ? <img src={directorForm.photoUrl} alt="Director" style={styles.avatarImage}/> : "🎓"}</div>
+              <div style={{flex:1}}>
+                <div style={styles.formGrid}>
+                  <FormField label="Director Name" value={directorForm.name || ""} onChange={v=>setDirectorForm(d=>({...d,name:v}))}/>
+                  <FormField label="Title" value={directorForm.title || ""} onChange={v=>setDirectorForm(d=>({...d,title:v}))} required={false}/>
+                  <FormField label="Mobile" value={directorForm.mobile || ""} onChange={v=>setDirectorForm(d=>({...d,mobile:v}))} required={false}/>
+                  <FormField label="Email" value={directorForm.email || ""} onChange={v=>setDirectorForm(d=>({...d,email:v}))} required={false}/>
+                  <FormField label="Address" value={directorForm.address || ""} onChange={v=>setDirectorForm(d=>({...d,address:v}))} required={false}/>
+                </div>
+              </div>
+            </div>
+            <label style={styles.uploadBox}>📷 Director Profile Picture<input type="file" accept="image/*" onChange={e=>setDirectorPhotoFile(e.target.files?.[0] || null)}/><small>{directorPhotoFile?.name || "Choose photo"}</small></label>
+            <label style={styles.label}>Director Message</label><textarea style={{...styles.input,minHeight:70}} value={directorForm.message || ""} onChange={e=>setDirectorForm(d=>({...d,message:e.target.value}))} placeholder="Welcome message for students..."/>
+            {directorMessage && <div style={directorMessage.includes("successfully")?styles.successBox:styles.errorBox}>{directorMessage}</div>}
+            <div style={styles.formActions}><button style={styles.primaryButtonSmall} disabled={directorSaving}>{directorSaving?"Saving...":"💾 Save Director Profile"}</button></div>
+          </form>
+        </div>}
+
+        <div style={styles.card}>
           <h2>🕒 Recent Activity</h2>
-
-          <p>✅ Student management active</p>
-
-          <p>📝 Test & result management</p>
-
-          <p>📅 Attendance management</p>
-
-          <p>💰 Fee management</p>
-
-          <p>📚 Homework management</p>
-
-          <p>📢 Notice board</p>
+          <p>✅ Student management active</p><p>📝 Test & result management active</p><p>📅 Attendance management active</p><p>💰 Fee management active</p><p>📚 Homework management active</p><p>📢 Notice board active</p>
         </div>
       </>
     );
@@ -2871,7 +3081,7 @@ export default function App() {
           <h3 style={{marginTop:24}}>Student Marks & Attendance</h3><div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Present?</th><th style={styles.th}>Marks / {Number(testTotal)||0}</th><th style={styles.th}>%</th></tr></thead><tbody>{students.filter(s=>(!testClass || s.className===testClass)&&(!testBatch || s.batch===testBatch)).map(s=>{if(!s.studentId)return null; const r=testResults[s.studentId]||{present:true,marks:null}; const pct=r.present&&r.marks!=null?(Number(r.marks)/Number(testTotal||1))*100:null; return <tr key={s.studentId}><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}><input type="checkbox" checked={r.present!==false} onChange={e=>setTestResults(prev=>({...prev,[s.studentId!]:{...r,present:e.target.checked,marks:e.target.checked?r.marks:null}}))}/> {r.present===false?"Absent":"Present"}</td><td style={styles.td}><input style={styles.compactInput} type="number" min="0" max={Number(testTotal)||0} disabled={r.present===false} value={r.marks ?? ""} onChange={e=>setTestResults(prev=>({...prev,[s.studentId!]:{...r,present:true,marks:e.target.value===""?null:Number(e.target.value)}}))}/></td><td style={styles.td}>{pct==null?"-":`${pct.toFixed(1)}%`}</td></tr>})}</tbody></table></div>
           <div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={resetTestForm}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingTest}>{savingTest?"Saving...":"💾 Save Test & Results"}</button></div>
         </form></div>}
-      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📚 Test Library</h2><p style={styles.muted}>{tests.length} test{tests.length===1?"":"s"} published</p></div></div>{testsLoading?<div style={styles.emptyBox}>Loading tests...</div>:tests.length===0?<div style={styles.emptyBox}>No tests created yet.</div>:tests.map(test=>{const results=Object.values(test.results||{}) as TestResult[];const present=results.filter(r=>r?.present).length;const entered=results.filter(r=>r?.present&&r?.marks!=null);const avg=entered.length?entered.reduce((sum,r)=>sum+(Number(r.marks)/Number(test.total||1))*100,0)/entered.length:0;return <div key={test.id} style={styles.testCard}><div><div style={styles.homeworkMeta}><strong>{test.subject} · {test.name}</strong><span>{test.date}</span></div><p style={styles.muted}>{test.className||"All classes"}{test.batch?` · ${test.batch}`:""} · {present} present · {entered.length} marks entered · Test average {avg.toFixed(1)}%</p></div><div style={styles.linkRow}>{test.questionPaperUrl&&<a style={styles.linkButton} href={test.questionPaperUrl} target="_blank" rel="noreferrer">📄 Question Paper</a>}{test.answerSheetUrl&&<a style={styles.linkButton} href={test.answerSheetUrl} target="_blank" rel="noreferrer">📝 Answer Sheet</a>}{isAdmin&&<><button style={styles.editButton} onClick={()=>openEditTest(test)}>✏️ Edit</button><button style={styles.deleteButton} onClick={()=>deleteTest(test)}>🗑️ Delete</button></>}</div></div>})}</div>
+      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📚 Test Library</h2><p style={styles.muted}>Browse tests class-wise and subject-wise.</p></div></div><div style={styles.filterBar}><select style={styles.filterInput} value={testLibraryClass} onChange={e=>setTestLibraryClass(e.target.value)}><option value="">All Classes</option>{Array.from(new Set(students.map(s=>s.className).filter(Boolean))).sort().map(v=><option key={v as string} value={v as string}>{v}</option>)}</select><select style={styles.filterInput} value={testLibrarySubject} onChange={e=>setTestLibrarySubject(e.target.value)}><option value="">All Subjects</option>{Array.from(new Set(tests.map(t=>t.subject).filter(Boolean))).sort().map(v=><option key={v as string} value={v}>{v}</option>)}</select></div>{(() => { const filteredTests=tests.filter(t=>(!testLibraryClass || !t.className || t.className===testLibraryClass)&&(!testLibrarySubject || t.subject===testLibrarySubject)); return testsLoading?<div style={styles.emptyBox}>Loading tests...</div>:filteredTests.length===0?<div style={styles.emptyBox}>No tests match the selected filters.</div>:filteredTests.map(test=>{const results=Object.values(test.results||{}) as TestResult[];const present=results.filter(r=>r?.present).length;const entered=results.filter(r=>r?.present&&r?.marks!=null);const avg=entered.length?entered.reduce((sum,r)=>sum+(Number(r.marks)/Number(test.total||1))*100,0)/entered.length:0;return <div key={test.id} style={styles.testCard}><div><div style={styles.homeworkMeta}><strong>{test.subject} · {test.name}</strong><span>{test.date}</span></div><p style={styles.muted}>{test.className||"All Classes"}{test.batch?` · ${test.batch}`:""} · {present} present · {entered.length} marks entered · Test average {avg.toFixed(1)}%</p></div><div style={styles.linkRow}>{test.questionPaperUrl&&<a style={styles.linkButton} href={test.questionPaperUrl} target="_blank" rel="noreferrer">📄 Question Paper</a>}{test.answerSheetUrl&&<a style={styles.linkButton} href={test.answerSheetUrl} target="_blank" rel="noreferrer">📝 Answer Sheet</a>}{isAdmin&&<><button style={styles.editButton} onClick={()=>openEditTest(test)}>✏️ Edit</button><button style={styles.deleteButton} onClick={()=>deleteTest(test)}>🗑️ Delete</button></>}</div></div>})})()}</div>
       <div style={styles.card}><h2>🏆 Overall Ranking · All Classes</h2><p style={styles.muted}>Average percentage across tests where the student was present and marks were entered.</p><div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Rank</th><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Tests Counted</th><th style={styles.th}>Average %</th></tr></thead><tbody>{ranking.filter(s=>s.computedAverage>0).map((s,i)=><tr key={s.studentId||s.id}><td style={styles.td}><strong>#{i+1}</strong></td><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}>{tests.filter(t=>{const r=(t.results||{})[s.studentId||""];return r?.present&&r.marks!=null}).length}</td><td style={styles.td}><strong>{s.computedAverage.toFixed(2)}%</strong></td></tr>)}</tbody></table></div></div>
     </>;
   };
@@ -3022,8 +3232,30 @@ export default function App() {
 
           {page === "students" && studentsPage()}
 
-          {page === "teachers" &&
-            simplePage("Teachers", "👨‍🏫", "Manage teachers and batches")}
+          {page === "teachers" && <TeacherPage
+            isAdmin={isAdmin}
+            teachers={teachers}
+            showForm={showTeacherForm}
+            editing={editingTeacher}
+            name={teacherName}
+            subject={teacherSubject}
+            className={teacherClass}
+            batch={teacherBatch}
+            mobile={teacherMobile}
+            email={teacherEmail}
+            message={teacherMessage}
+            setName={setTeacherName}
+            setSubject={setTeacherSubject}
+            setClassName={setTeacherClass}
+            setBatch={setTeacherBatch}
+            setMobile={setTeacherMobile}
+            setEmail={setTeacherEmail}
+            onAdd={openAddTeacher}
+            onEdit={openEditTeacher}
+            onDelete={deleteTeacher}
+            onSave={saveTeacher}
+            onClose={resetTeacherForm}
+          />}
 
           {page === "tests" && testsPage()}
 
@@ -3038,6 +3270,28 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+/* =========================================================
+   TEACHER PAGE
+========================================================= */
+function TeacherPage(props: any) {
+  const { isAdmin, teachers, showForm, editing, name, subject, className, batch, mobile, email, message, setName, setSubject, setClassName, setBatch, setMobile, setEmail, onAdd, onEdit, onDelete, onSave, onClose } = props;
+  return <React.Fragment>
+    <div style={styles.pageHeader}><div><h1>👨‍🏫 Teachers</h1><p style={styles.muted}>Manage faculty, subjects, classes and contact details.</p></div>{isAdmin && <button style={styles.primaryButtonSmall} onClick={onAdd}>➕ Add Teacher</button>}</div>
+    {message && <div style={message.includes("successfully") ? styles.successBox : styles.errorBox}>{message}</div>}
+    {showForm && isAdmin && <div style={styles.card}><div style={styles.formHeader}><div><h2>{editing ? "✏️ Edit Teacher" : "➕ Add Teacher"}</h2><p style={styles.muted}>Keep faculty information up to date.</p></div><button style={styles.closeButton} onClick={onClose}>✕</button></div>
+      <form onSubmit={onSave}><div style={styles.formGrid}>
+        <FormField label="Teacher Name *" value={name} onChange={setName} placeholder="Teacher name"/>
+        <FormField label="Subject *" value={subject} onChange={setSubject} placeholder="Mathematics"/>
+        <FormField label="Class" value={className} onChange={setClassName} placeholder="Class 9" required={false}/>
+        <FormField label="Batch" value={batch} onChange={setBatch} placeholder="9 A" required={false}/>
+        <FormField label="Mobile" value={mobile} onChange={setMobile} placeholder="Phone number" required={false}/>
+        <FormField label="Email" value={email} onChange={setEmail} placeholder="teacher@example.com" required={false}/>
+      </div><div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={onClose}>Cancel</button><button type="submit" style={styles.primaryButtonSmall}>💾 {editing ? "Update Teacher" : "Save Teacher"}</button></div></form>
+    </div>}
+    <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>Faculty Directory</h2><p style={styles.muted}>{teachers.length} teacher{teachers.length===1?"":"s"} registered</p></div></div>{teachers.length===0?<div style={styles.emptyBox}>No teachers added yet.</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Teacher</th><th style={styles.th}>Subject</th><th style={styles.th}>Class</th><th style={styles.th}>Batch</th><th style={styles.th}>Contact</th>{isAdmin&&<th style={styles.th}>Action</th>}</tr></thead><tbody>{teachers.map((t:Teacher)=><tr key={t.id}><td style={styles.td}><strong>{t.name||"-"}</strong></td><td style={styles.td}>{t.subject||"-"}</td><td style={styles.td}>{t.className||"All"}</td><td style={styles.td}>{t.batch||"All"}</td><td style={styles.td}>{t.mobile||t.email||"-"}</td>{isAdmin&&<td style={styles.td}><button style={styles.editButton} onClick={()=>onEdit(t)}>✏️ Edit</button> <button style={styles.deleteButton} onClick={()=>onDelete(t)}>🗑️ Delete</button></td>}</tr>)}</tbody></table></div>}</div>
+  </React.Fragment>;
 }
 
 /* =========================================================
@@ -3163,8 +3417,8 @@ const styles: {
     justifyContent: "center",
     alignItems: "center",
     padding: 20,
-    background: "#f5f7fb",
-    fontFamily: "Arial, sans-serif",
+    background: "radial-gradient(circle at 10% 10%, #eef2ff 0, #f8fafc 42%, #eef2f7 100%)",
+    fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
   },
 
   loginCard: {
@@ -3172,15 +3426,15 @@ const styles: {
     maxWidth: 430,
     background: "white",
     padding: 35,
-    borderRadius: 18,
-    boxShadow: "0 12px 35px rgba(0,0,0,0.1)",
+    borderRadius: 22,
+    boxShadow: "0 30px 80px rgba(15,23,42,.14)",
   },
 
   logoCircle: {
     width: 70,
     height: 70,
     borderRadius: "50%",
-    background: "#eef2ff",
+    background: "linear-gradient(135deg,#eef2ff,#e0e7ff)",
     display: "flex",
     justifyContent: "center",
     alignItems: "center",
@@ -3227,7 +3481,7 @@ const styles: {
     border: "none",
     borderRadius: 9,
     padding: "13px 18px",
-    background: "#2563eb",
+    background: "linear-gradient(135deg,#4f46e5,#2563eb)",
     color: "white",
     fontWeight: 700,
     fontSize: 15,
@@ -3239,7 +3493,7 @@ const styles: {
     border: "none",
     borderRadius: 9,
     padding: "11px 16px",
-    background: "#2563eb",
+    background: "linear-gradient(135deg,#4f46e5,#2563eb)",
     color: "white",
     fontWeight: 700,
     cursor: "pointer",
@@ -3307,7 +3561,7 @@ const styles: {
     border: "none",
     borderRadius: 9,
     padding: "10px 15px",
-    background: "#ef4444",
+    background: "linear-gradient(135deg,#ef4444,#dc2626)",
     color: "white",
     fontWeight: 700,
     cursor: "pointer",
@@ -3315,7 +3569,7 @@ const styles: {
 
   closeButton: {
     border: "none",
-    background: "#f3f4f6",
+    background: "#f8fafc",
     borderRadius: 8,
     width: 35,
     height: 35,
@@ -3344,12 +3598,12 @@ const styles: {
   appPage: {
     minHeight: "100vh",
     background: "radial-gradient(circle at 100% 0%, #eef2ff 0, #f8fafc 35%, #eef2f7 100%)",
-    fontFamily: "Arial, sans-serif",
+    fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
   },
 
   topbar: {
     minHeight: 74,
-    background: "rgba(255,255,255,0.92)",
+    background: "rgba(255,255,255,.86)",
     borderBottom: "1px solid #e5e7eb",
     display: "flex",
     alignItems: "center",
@@ -3370,9 +3624,9 @@ const styles: {
   },
 
   sidebar: {
-    width: 220,
+    width: 250,
     background: "linear-gradient(180deg,#0f172a,#111827 55%,#172554)",
-    padding: 15,
+    padding: 18,
     boxSizing: "border-box",
   },
 
@@ -3383,9 +3637,9 @@ const styles: {
     background: "transparent",
     color: "#d1d5db",
     padding: "12px 13px",
-    borderRadius: 8,
+    borderRadius: 11,
     cursor: "pointer",
-    marginBottom: 5,
+    marginBottom: 7,
     fontSize: 14,
   },
 
@@ -3393,19 +3647,19 @@ const styles: {
     width: "100%",
     textAlign: "left",
     border: "none",
-    background: "linear-gradient(135deg,#4f46e5,#2563eb)",
+    background: "linear-gradient(135deg,#6366f1,#2563eb)",
     color: "white",
-    padding: "12px 13px",
-    borderRadius: 8,
+    padding: "13px 14px",
+    borderRadius: 11,
     cursor: "pointer",
-    marginBottom: 5,
+    marginBottom: 7,
     fontSize: 14,
     fontWeight: 700,
   },
 
   main: {
     flex: 1,
-    padding: 25,
+    padding: 30,
     boxSizing: "border-box",
     overflow: "auto",
   },
@@ -3420,25 +3674,25 @@ const styles: {
   grid: {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-    gap: 18,
-    marginBottom: 22,
+    gap: 20,
+    marginBottom: 24,
   },
 
   statCard: {
     background: "white",
-    borderRadius: 14,
+    borderRadius: 18,
     padding: 20,
     display: "flex",
     alignItems: "center",
     gap: 15,
-    boxShadow: "0 4px 15px rgba(0,0,0,0.05)",
+    boxShadow: "0 12px 30px rgba(15,23,42,.06)",
   },
 
   statIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
-    background: "#eef2ff",
+    width: 52,
+    height: 52,
+    borderRadius: 15,
+    background: "linear-gradient(135deg,#eef2ff,#e0e7ff)",
     display: "flex",
     justifyContent: "center",
     alignItems: "center",
@@ -3456,20 +3710,21 @@ const styles: {
   },
 
   card: {
-    background: "white",
-    borderRadius: 14,
-    padding: 22,
+    background: "rgba(255,255,255,.94)",
+    borderRadius: 18,
+    padding: 24,
     marginBottom: 22,
-    boxShadow: "0 12px 30px rgba(15,23,42,0.07)",
+    boxShadow: "0 16px 40px rgba(15,23,42,.08)",
     border: "1px solid rgba(148,163,184,0.16)",
   },
 
   studentWelcome: {
-    background: "white",
-    padding: 25,
-    borderRadius: 14,
-    marginBottom: 22,
-    boxShadow: "0 4px 15px rgba(0,0,0,0.05)",
+    background: "linear-gradient(135deg,#111827 0%,#312e81 52%,#2563eb 100%)",
+    color: "white",
+    padding: 30,
+    borderRadius: 22,
+    marginBottom: 24,
+    boxShadow: "0 20px 45px rgba(37,99,235,.22)",
   },
 
   twoColumn: {
@@ -3491,8 +3746,8 @@ const styles: {
   },
 
   emptyBox: {
-    background: "#f9fafb",
-    borderRadius: 10,
+    background: "linear-gradient(135deg,#f8fafc,#eef2ff)",
+    borderRadius: 14,
     padding: 25,
     textAlign: "center",
     color: "#6b7280",
@@ -3530,8 +3785,8 @@ const styles: {
   th: {
     textAlign: "left",
     padding: 12,
-    background: "#f9fafb",
-    borderBottom: "1px solid #e5e7eb",
+    background: "#f1f5f9",
+    borderBottom: "1px solid #e2e8f0",
     fontSize: 13,
   },
 
@@ -3562,8 +3817,8 @@ const styles: {
   },
 
   monthFeeCard: {
-    border: "1px solid #e5e7eb",
-    borderRadius: 12,
+    border: "1px solid #e2e8f0",
+    borderRadius: 14,
     padding: 16,
     background: "#fafafa",
   },
@@ -3574,8 +3829,8 @@ const styles: {
   },
 
   homeworkItem: {
-    border: "1px solid #e5e7eb",
-    borderRadius: 12,
+    border: "1px solid #e2e8f0",
+    borderRadius: 14,
     padding: 16,
     background: "#fafafa",
   },
@@ -3612,6 +3867,24 @@ const styles: {
     fontSize: 14,
   },
 
+  filterBar:{display:"flex",gap:10,flexWrap:"wrap",margin:"14px 0"},
+  filterInput:{padding:"10px 12px",border:"1px solid #cbd5e1",borderRadius:9,background:"#fff",minWidth:170},
+  quickGrid:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:12,marginTop:16},
+  quickAction:{border:"1px solid #e2e8f0",borderRadius:14,padding:14,background:"linear-gradient(135deg,#fff,#f8fafc)",display:"flex",alignItems:"center",gap:12,cursor:"pointer",textAlign:"left"},
+  directorEditor:{display:"flex",gap:18,alignItems:"flex-start"},
+  profileHero:{display:"flex",alignItems:"center",gap:14,marginBottom:14},
+  avatarLarge:{width:72,height:72,borderRadius:"50%",background:"#eef2ff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:32,overflow:"hidden",border:"3px solid #fff",boxShadow:"0 8px 22px rgba(37,99,235,.15)"},
+  avatarDirector:{width:64,height:64,borderRadius:"50%",background:"#eef2ff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,overflow:"hidden",flexShrink:0},
+  avatarImage:{width:"100%",height:"100%",objectFit:"cover"},
+  directorCard:{display:"flex",gap:14,alignItems:"center",padding:14,borderRadius:14,background:"linear-gradient(135deg,#f8fafc,#eef2ff)",border:"1px solid #e0e7ff"},
+  calendarCard:{padding:16,border:"1px solid #e5e7eb",borderRadius:16,background:"#fbfdff"},
+  calendarToolbar:{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,marginBottom:12},
+  monthInput:{padding:"7px 9px",border:"1px solid #cbd5e1",borderRadius:8,background:"#fff"},
+  calendarGrid:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:7},
+  calendarHead:{textAlign:"center",fontSize:11,fontWeight:800,color:"#64748b",padding:"5px 0"},
+  calendarDay:{aspectRatio:"1",display:"flex",alignItems:"center",justifyContent:"center",borderRadius:"50%",background:"#f1f5f9",fontSize:13,fontWeight:700,color:"#334155",maxWidth:42,margin:"auto",width:"100%"},
+  calendarPresent:{background:"#dcfce7",color:"#166534",boxShadow:"inset 0 0 0 2px #22c55e"},
+  calendarAbsent:{background:"#fee2e2",color:"#991b1b",boxShadow:"inset 0 0 0 2px #ef4444"},
   sectionTitleRow:{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12},
   noticeItem:{border:"1px solid #e5e7eb",borderRadius:12,padding:16,marginBottom:12,background:"#fff"},
   noticeBadge:{display:"inline-block",padding:"5px 9px",borderRadius:999,background:"#eef2ff",color:"#3730a3",fontSize:11,fontWeight:800,letterSpacing:.5},
