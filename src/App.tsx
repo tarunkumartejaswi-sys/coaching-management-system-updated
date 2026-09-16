@@ -256,6 +256,8 @@ export default function App() {
   const [testQuestionFile, setTestQuestionFile] = useState<File | null>(null);
   const [testAnswerFile, setTestAnswerFile] = useState<File | null>(null);
   const [savingTest, setSavingTest] = useState(false);
+  const [expandedTestId, setExpandedTestId] = useState<string | null>(null);
+  const [studentSearch, setStudentSearch] = useState("");
 
   /* =========================================================
      ATTENDANCE
@@ -1018,9 +1020,8 @@ export default function App() {
         throw new Error(result?.error || "Unable to delete student.");
       }
 
-      const updatedStudents = await getStudents();
-      setStudents(updatedStudents);
-      setDirectoryStudents(updatedStudents);
+      setStudents((current) => current.filter((item) => item.studentId !== student.studentId));
+      setDirectoryStudents((current) => current.filter((item) => item.studentId !== student.studentId));
       setEditingStudent(null);
       setCredentialStudent(null);
       setShowCredentialForm(false);
@@ -1310,7 +1311,18 @@ export default function App() {
         date: attendanceDate, day: d.toLocaleDateString("en-IN", { weekday: "long" }), year: d.getFullYear(),
         records: attendanceRecords, updatedAt: new Date().toISOString()
       }, { merge: true });
-      await loadAttendance(); setAttendanceMessage("Attendance saved successfully! ✅");
+
+      // Keep the summary stored on each student in sync with the daily register.
+      const combinedDays = [...attendanceDays.filter((row) => row.date !== attendanceDate), { date: attendanceDate, records: attendanceRecords }];
+      await Promise.all(students.filter((s) => s.studentId).map(async (student) => {
+        const rows = combinedDays.filter((row) => row.records && Object.prototype.hasOwnProperty.call(row.records, student.studentId!));
+        const present = rows.filter((row) => row.records?.[student.studentId!] === "present").length;
+        const percentage = rows.length ? Number(((present / rows.length) * 100).toFixed(1)) : 0;
+        await updateDoc(doc(db, "students", student.studentId!), { attendance: percentage });
+      }));
+      await loadAttendance();
+      setStudents(await getStudents());
+      setAttendanceMessage("Attendance saved and student dashboards synced successfully! ✅");
     } catch (error: any) { setAttendanceMessage(`Unable to save attendance: ${error?.message || "Unknown error"}`); }
   };
 
@@ -1364,6 +1376,43 @@ export default function App() {
       }
     }));
     return Object.fromEntries(Object.entries(sums).map(([sid, v]) => [sid, v.count ? v.total / v.count : 0]));
+  };
+
+  const getStudentAttendanceStatus = (day: AttendanceDay, sid?: string, authUid?: string) => {
+    const records = day.records || {};
+    if (sid && records[sid]) return records[sid];
+    if (authUid && records[authUid]) return records[authUid];
+    return undefined;
+  };
+
+  const getAttendanceStats = (sid?: string, authUid?: string) => {
+    if (!sid && !authUid) return { present: 0, absent: 0, recorded: 0, percentage: 0 };
+    const rows = attendanceDays.filter((day) => Boolean(getStudentAttendanceStatus(day, sid, authUid)));
+    const present = rows.filter((day) => getStudentAttendanceStatus(day, sid, authUid) === "present").length;
+    return { present, absent: rows.length - present, recorded: rows.length, percentage: rows.length ? (present / rows.length) * 100 : 0 };
+  };
+
+  const getStudentRanking = () => {
+    const averages = studentAverageMap();
+    const roster = (students.length ? students : directoryStudents)
+      .filter((s) => s.studentId)
+      .map((s) => ({
+        ...s,
+        computedAverage: Number(averages[s.studentId || ""] || 0),
+        testsCounted: tests.filter((t) => {
+          const r = (t.results || {})[s.studentId || ""];
+          return Boolean(r?.present && r.marks !== null && r.marks !== undefined);
+        }).length,
+      }))
+      .filter((s) => s.testsCounted > 0)
+      .sort((a, b) => b.computedAverage - a.computedAverage || String(a.name || "").localeCompare(String(b.name || "")));
+    let lastAverage = -1;
+    let rank = 0;
+    return roster.map((student, index) => {
+      if (student.computedAverage !== lastAverage) rank = index + 1;
+      lastAverage = student.computedAverage;
+      return { ...student, rank };
+    });
   };
 
   useEffect(() => {
@@ -1668,20 +1717,38 @@ export default function App() {
   ========================================================= */
 
   if (profile?.role === "student") {
+    const studentSid = studentData?.studentId || profile.studentId || "";
+    const myAttendance = getAttendanceStats(studentSid, studentData?.authUid);
+    const ranking = getStudentRanking();
+    const myRank = ranking.find((item) => item.studentId === studentSid);
+    const myAverage = Number(studentAverageMap()[studentSid] || 0);
+    const myTests = tests.filter((test) => {
+      const result = (test.results || {})[studentSid];
+      return Boolean(result?.present && result.marks !== null && result.marks !== undefined);
+    }).length;
+    const myPendingHomework = homeworkForStudent(studentData).filter(
+      (item) => !Boolean(((item as any).completion || {})[studentSid])
+    ).length;
+
     return (
       <div style={styles.appPage}>
         <header style={styles.topbar}>
-          <div>
-            <h2 style={{ margin: 0 }}>🎓 Student Dashboard</h2>
-
-            <p style={styles.topbarSub}>
-              Welcome, {studentData?.name || profile.name}
-            </p>
+          <div style={styles.brandBlock}>
+            <div style={styles.brandMark}>🎓</div>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 18 }}>Coaching Management System</h2>
+              <p style={styles.topbarSub}>Student Portal · {studentData?.className || "Class not set"}</p>
+            </div>
           </div>
-
-          <button style={styles.logoutButton} onClick={handleLogout}>
-            Logout
-          </button>
+          <div style={styles.topbarActions}>
+            <div style={styles.userPill}>
+              <div style={styles.avatarSmall}>
+                {studentData?.photoUrl ? <img src={studentData.photoUrl} alt="Student" style={styles.avatarImage} /> : "👤"}
+              </div>
+              <span>{studentData?.name || profile.name || "Student"}</span>
+            </div>
+            <button style={styles.logoutButton} onClick={handleLogout}>Logout</button>
+          </div>
         </header>
 
         <main style={styles.main}>
@@ -1703,32 +1770,22 @@ export default function App() {
             </form>
           </div>}
           <div style={styles.studentWelcome}>
-            <h1>Welcome, {studentData?.name || profile.name}! 👋</h1>
-
-            <p>
-              Student ID: <strong>{profile.studentId}</strong>
-            </p>
+            <div>
+              <span style={styles.heroEyebrow}>STUDENT PORTAL</span>
+              <h1 style={{ margin: "8px 0 6px", fontSize: 30 }}>Welcome back, {studentData?.name || profile.name}! 👋</h1>
+              <p style={{ margin: 0, opacity: .82 }}>
+                {studentData?.className || "Class not set"}{studentData?.batch ? ` · ${studentData.batch}` : ""} · ID {studentSid}
+              </p>
+            </div>
+            <div style={styles.heroMetric}><span>Overall Rank</span><strong>{myRank ? `#${myRank.rank}` : "—"}</strong><small>Across all classes</small></div>
           </div>
 
           <div style={styles.grid}>
-            <StatCard
-              title="My Average"
-              value={(() => { const av = studentAverageMap()[studentData?.studentId || ""] || 0; return av ? `${av.toFixed(1)}%` : "0%"; })()}
-              icon="📊"
-            />
-
-            <StatCard
-              title="My Attendance"
-              value={
-                studentData?.attendance !== undefined
-                  ? `${studentData.attendance}%`
-                  : "N/A"
-              }
-              icon="📅"
-            />
-
-            <StatCard
-              title="My Monthly Fee"
+            <StatCard title="Overall Average" value={myAverage ? `${myAverage.toFixed(1)}%` : "—"} icon="📊" />
+            <StatCard title="Attendance" value={myAttendance.recorded ? `${myAttendance.percentage.toFixed(0)}%` : "—"} icon="📅" />
+            <StatCard title="Tests Counted" value={String(myTests)} icon="📝" />
+            <StatCard title="Pending Homework" value={String(myPendingHomework)} icon="📚" />
+            <StatCard title="Monthly Fee"
               value={`₹${
                 studentFee?.monthlyFee ??
                 studentData?.monthlyFee ??
@@ -1738,13 +1795,8 @@ export default function App() {
               icon="💰"
             />
 
-            <StatCard
-              title="My Total Due"
-              value={`₹${studentData?.feeDue ?? 0}`}
-              icon="🔴"
-            />
-
-            <StatCard title="My Rank" value={(() => { const av = studentAverageMap(); const roster = students.length ? students : directoryStudents; const ranked = roster.map(s => ({ id: s.studentId || "", avg: av[s.studentId || ""] || 0 })).filter(x => x.avg > 0).sort((a,b) => b.avg-a.avg); const idx = ranked.findIndex(x => x.id === studentData?.studentId); return idx >= 0 ? `#${idx + 1}` : "-"; })()} icon="🏆" />
+            <StatCard title="Total Fee Due" value={`₹${studentData?.feeDue ?? 0}`} icon="🔴" />
+            <StatCard title="Overall Rank" value={myRank ? `#${myRank.rank}` : "—"} icon="🏆" />
           </div>
 
           <div style={styles.twoColumn}>
@@ -1812,12 +1864,13 @@ export default function App() {
                 </div>
               )}
               {homeworkForStudent(studentData).some(item => !((item as any).completion || {})[studentData?.studentId || ""]) && <div style={styles.warningBox}><strong>⚠ Your Pending Homework</strong><div style={{marginTop:6}}>{homeworkForStudent(studentData).filter(item => !((item as any).completion || {})[studentData?.studentId || ""]).slice(0,6).map(item => <div key={item.id}>🔴 {item.title} · Due {item.dueDate || "No due date"}</div>)}</div></div>}
+              {homeworkForStudent(studentData).some(item => homeworkDefaulters(item).length > 0) && <div style={styles.warningBox}><strong>📋 Class Homework Status</strong><p style={{margin:"5px 0 9px",fontWeight:500}}>Students with unfinished work are shown here so the class can keep track of pending assignments.</p>{homeworkForStudent(studentData).slice(0,6).map(item => { const assigned=students.filter(s=>s.studentId && homeworkForStudent(s).some(h=>h.id===item.id)); const defaulters=homeworkDefaulters(item); if(!assigned.length || !defaulters.length) return null; return <div key={item.id} style={{marginTop:7}}><strong>{item.title}</strong><div style={styles.defaulterList}>{defaulters.map(s=><span key={s.studentId} style={styles.notDoneStudentButton}>🔴 {s.name}</span>)}</div></div>; })}</div>}
             </div>
           </div>
 
           <div style={styles.card}>
             <div className="sectionTitleRow"><div><h2 style={{margin:"0 0 4px"}}>📅 My Attendance Calendar</h2><p style={styles.muted}>Green = Present · Red = Absent</p></div></div>
-            {(() => { const sid=studentData?.studentId || ""; const rows=attendanceDays.filter(d=>d.records?.[sid]); const present=rows.filter(d=>d.records?.[sid]==="present").length; const pct=rows.length?present/rows.length*100:0; const [ys,ms]=studentCalendarMonth.split("-").map(Number); const y=ys||new Date().getFullYear(), m=(ms||new Date().getMonth()+1)-1; const first=new Date(y,m,1).getDay(); const days=new Date(y,m+1,0).getDate(); const monthKey=`${y}-${String(m+1).padStart(2,"0")}`; const map=Object.fromEntries(rows.filter(r=>(r.date||"").startsWith(monthKey)).map(r=>[Number((r.date||"").slice(-2)),r.records?.[sid]])); return <><div style={styles.feeHistoryGrid}><div><span style={styles.smallLabel}>Present</span><strong>{present}</strong></div><div><span style={styles.smallLabel}>Absent</span><strong>{Math.max(rows.length-present,0)}</strong></div><div><span style={styles.smallLabel}>Attendance</span><strong>{pct.toFixed(0)}%</strong></div><div><span style={styles.smallLabel}>Recorded Days</span><strong>{rows.length}</strong></div></div><div style={styles.calendarCard}><div style={styles.calendarToolbar}><h3 style={{margin:0}}>{new Date(y,m,1).toLocaleDateString("en-IN",{month:"long",year:"numeric"})}</h3><input style={styles.monthInput} type="month" value={studentCalendarMonth} onChange={e=>setStudentCalendarMonth(e.target.value)} /></div><div style={styles.calendarGrid}>{["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d=><div key={d} style={styles.calendarHead}>{d}</div>)}{Array.from({length:first}).map((_,i)=><div key={"e"+i}/>) }{Array.from({length:days},(_,i)=>i+1).map(day=>{const status=map[day];return <div key={day} title={status||"No record"} style={{...styles.calendarDay,...(status==="present"?styles.calendarPresent:status==="absent"?styles.calendarAbsent:{})}}>{day}</div>})}</div></div></>; })()}
+            {(() => { const sid=studentSid; const authSid=studentData?.authUid || ""; const rows=attendanceDays.filter(d=>Boolean(getStudentAttendanceStatus(d,sid,authSid))); const present=rows.filter(d=>getStudentAttendanceStatus(d,sid,authSid)==="present").length; const pct=rows.length?present/rows.length*100:0; const [ys,ms]=studentCalendarMonth.split("-").map(Number); const y=ys||new Date().getFullYear(), m=(ms||new Date().getMonth()+1)-1; const first=new Date(y,m,1).getDay(); const days=new Date(y,m+1,0).getDate(); const monthKey=`${y}-${String(m+1).padStart(2,"0")}`; const map=Object.fromEntries(rows.filter(r=>(r.date||"").startsWith(monthKey)).map(r=>[Number((r.date||"").slice(-2)),getStudentAttendanceStatus(r,sid,authSid)])); return <><div style={styles.feeHistoryGrid}><div><span style={styles.smallLabel}>Present</span><strong>{present}</strong></div><div><span style={styles.smallLabel}>Absent</span><strong>{Math.max(rows.length-present,0)}</strong></div><div><span style={styles.smallLabel}>Attendance</span><strong>{pct.toFixed(0)}%</strong></div><div><span style={styles.smallLabel}>Recorded Days</span><strong>{rows.length}</strong></div></div><div style={styles.calendarCard}><div style={styles.calendarToolbar}><h3 style={{margin:0}}>{new Date(y,m,1).toLocaleDateString("en-IN",{month:"long",year:"numeric"})}</h3><input style={styles.monthInput} type="month" value={studentCalendarMonth} onChange={e=>setStudentCalendarMonth(e.target.value)} /></div><div style={styles.calendarGrid}>{["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d=><div key={d} style={styles.calendarHead}>{d}</div>)}{Array.from({length:first}).map((_,i)=><div key={"e"+i}/>) }{Array.from({length:days},(_,i)=>i+1).map(day=>{const status=map[day];return <div key={day} title={status||"No record"} style={{...styles.calendarDay,...(status==="present"?styles.calendarPresent:status==="absent"?styles.calendarAbsent:{})}}>{day}</div>})}</div></div></>; })()}
           </div>
 
           <div style={styles.card}>
@@ -1913,6 +1966,16 @@ export default function App() {
               <div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Test</th><th style={styles.th}>Subject</th><th style={styles.th}>Date</th><th style={styles.th}>Marks</th><th style={styles.th}>Percentage</th></tr></thead><tbody>
                 {tests.map((test) => { const r = (test.results || {})[studentData?.studentId || ""]; const pct = r?.present && r?.marks != null ? (Number(r.marks) / Number(test.total || 1)) * 100 : null; return <tr key={test.id}><td style={styles.td}>{test.name}</td><td style={styles.td}>{test.subject}</td><td style={styles.td}>{test.date}</td><td style={styles.td}>{r?.present ? `${r.marks ?? "-"} / ${test.total}` : "Absent"}</td><td style={styles.td}>{pct == null ? "-" : `${pct.toFixed(1)}%`}</td></tr>; })}
               </tbody></table></div>
+            )}
+          </div>
+
+          <div style={styles.card}>
+            <div style={styles.sectionTitleRow}>
+              <div><h2 style={{ margin: 0 }}>🏆 Performance Position</h2><p style={styles.muted}>Your average is calculated from every test where marks are entered.</p></div>
+              <div style={styles.rankBadge}>{myRank ? `#${myRank.rank}` : "—"}</div>
+            </div>
+            {ranking.length === 0 ? <div style={styles.emptyBox}>Ranking will appear after marks are entered.</div> : (
+              <div style={styles.topRankList}>{ranking.slice(0,5).map(item=><div key={item.studentId} style={{...styles.rankRow,...(item.studentId===studentSid?styles.rankRowCurrent:{})}}><strong>#{item.rank}</strong><span style={{flex:1}}>{item.name}</span><small>{item.className||"—"}</small><b>{item.computedAverage.toFixed(1)}%</b></div>)}</div>
             )}
           </div>
         </main>
@@ -2336,7 +2399,7 @@ export default function App() {
         ================================================= */}
 
         <div style={styles.card}>
-          <h2>All Students</h2>
+          <div style={styles.sectionTitleRow}><div><h2 style={{margin:0}}>Student Directory</h2><p style={styles.muted}>{students.length} registered students</p></div><input style={styles.filterInput} placeholder="Search name, ID or class..." value={studentSearch} onChange={e=>setStudentSearch(e.target.value)} /></div>
 
           {students.length === 0 ? (
             <div style={styles.emptyBox}>No students found.</div>
@@ -2366,7 +2429,7 @@ export default function App() {
                 </thead>
 
                 <tbody>
-                  {students.map((student) => (
+                  {students.filter((student) => { const q=studentSearch.trim().toLowerCase(); if(!q)return true; return [student.studentId,student.name,student.className,student.batch,student.email].some(v=>String(v||"").toLowerCase().includes(q)); }).map((student) => (
                     <tr key={student.studentId || student.id}>
                       <td style={styles.td}>{student.studentId || "-"}</td>
 
@@ -2589,6 +2652,7 @@ export default function App() {
       (sum, item) => sum + Number(item.fee?.paidAmount || 0),
       0
     );
+    const collectionPercent = totalMonthlyFees > 0 ? Math.min(100, Math.round((totalPaidThisMonth / totalMonthlyFees) * 100)) : 0;
 
     return (
       <>
@@ -2640,6 +2704,12 @@ export default function App() {
             value={String(students.length)}
             icon="👨‍🎓"
           />
+        </div>
+
+        <div style={styles.card}>
+          <div style={styles.sectionTitleRow}><div><h2 style={{margin:0}}>💳 Collection Progress</h2><p style={styles.muted}>Current month payment collection</p></div><strong>{collectionPercent}% collected</strong></div>
+          <div style={{...styles.progressTrack,marginTop:14}}><div style={{...styles.progressFill,width:`${collectionPercent}%`}} /></div>
+          <div style={{display:"flex",justifyContent:"space-between",gap:12,marginTop:9,fontSize:12,color:"#64748b"}}><span>Collected ₹{totalPaidThisMonth.toLocaleString("en-IN")}</span><span>Expected ₹{totalMonthlyFees.toLocaleString("en-IN")}</span></div>
         </div>
 
         <div style={styles.card}>
@@ -3128,8 +3198,8 @@ export default function App() {
      TESTS PAGE
   ========================================================= */
   const testsPage = () => {
-    const averages = studentAverageMap();
-    const ranking = students.map(s => ({ ...s, computedAverage: averages[s.studentId || ""] || 0 })).sort((a,b) => b.computedAverage - a.computedAverage);
+    const ranking = getStudentRanking();
+    const unranked = students.filter((student) => student.studentId && !ranking.some((item) => item.studentId === student.studentId));
     return <>
       <div style={styles.pageHeader}><div><h1>📝 Tests & Results</h1><p style={styles.muted}>Create tests, enter marks, upload papers and rank every student across every class.</p></div>{isAdmin && <button style={styles.primaryButtonSmall} onClick={openAddTest}>➕ Create Test</button>}</div>
       {testMessage && <div style={testMessage.includes("successfully") ? styles.successBox : styles.errorBox}>{testMessage}</div>}
@@ -3139,8 +3209,8 @@ export default function App() {
           <h3 style={{marginTop:24}}>Student Marks & Attendance</h3><div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Present?</th><th style={styles.th}>Marks / {Number(testTotal)||0}</th><th style={styles.th}>%</th></tr></thead><tbody>{students.filter(s=>(!testClass || s.className===testClass)&&(!testBatch || s.batch===testBatch)).map(s=>{if(!s.studentId)return null; const r=testResults[s.studentId]||{present:true,marks:null}; const pct=r.present&&r.marks!=null?(Number(r.marks)/Number(testTotal||1))*100:null; return <tr key={s.studentId}><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}><input type="checkbox" checked={r.present!==false} onChange={e=>setTestResults(prev=>({...prev,[s.studentId!]:{...r,present:e.target.checked,marks:e.target.checked?r.marks:null}}))}/> {r.present===false?"Absent":"Present"}</td><td style={styles.td}><input style={styles.compactInput} type="number" min="0" max={Number(testTotal)||0} disabled={r.present===false} value={r.marks ?? ""} onChange={e=>setTestResults(prev=>({...prev,[s.studentId!]:{...r,present:true,marks:e.target.value===""?null:Number(e.target.value)}}))}/></td><td style={styles.td}>{pct==null?"-":`${pct.toFixed(1)}%`}</td></tr>})}</tbody></table></div>
           <div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={resetTestForm}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingTest}>{savingTest?"Saving...":"💾 Save Test & Results"}</button></div>
         </form></div>}
-      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📚 Test Library</h2><p style={styles.muted}>Browse tests class-wise and subject-wise.</p></div></div><div style={styles.filterBar}><select style={styles.filterInput} value={testLibraryClass} onChange={e=>setTestLibraryClass(e.target.value)}><option value="">All Classes</option>{Array.from(new Set(students.map(s=>s.className).filter(Boolean))).sort().map(v=><option key={v as string} value={v as string}>{v}</option>)}</select><select style={styles.filterInput} value={testLibrarySubject} onChange={e=>setTestLibrarySubject(e.target.value)}><option value="">All Subjects</option>{Array.from(new Set(tests.map(t=>t.subject).filter(Boolean))).sort().map(v=><option key={v as string} value={v}>{v}</option>)}</select></div>{(() => { const filteredTests=tests.filter(t=>(!testLibraryClass || !t.className || t.className===testLibraryClass)&&(!testLibrarySubject || t.subject===testLibrarySubject)); return testsLoading?<div style={styles.emptyBox}>Loading tests...</div>:filteredTests.length===0?<div style={styles.emptyBox}>No tests match the selected filters.</div>:filteredTests.map(test=>{const results=Object.values(test.results||{}) as TestResult[];const present=results.filter(r=>r?.present).length;const entered=results.filter(r=>r?.present&&r?.marks!=null);const avg=entered.length?entered.reduce((sum,r)=>sum+(Number(r.marks)/Number(test.total||1))*100,0)/entered.length:0;return <div key={test.id} style={styles.testCard}><div><div style={styles.homeworkMeta}><strong>{test.subject} · {test.name}</strong><span>{test.date}</span></div><p style={styles.muted}>{test.className||"All Classes"}{test.batch?` · ${test.batch}`:""} · {present} present · {entered.length} marks entered · Test average {avg.toFixed(1)}%</p></div><div style={styles.linkRow}>{test.questionPaperUrl&&<a style={styles.linkButton} href={test.questionPaperUrl} target="_blank" rel="noreferrer">📄 Question Paper</a>}{test.answerSheetUrl&&<a style={styles.linkButton} href={test.answerSheetUrl} target="_blank" rel="noreferrer">📝 Answer Sheet</a>}{isAdmin&&<><button style={styles.editButton} onClick={()=>openEditTest(test)}>✏️ Edit</button><button style={styles.deleteButton} onClick={()=>deleteTest(test)}>🗑️ Delete</button></>}</div></div>})})()}</div>
-      <div style={styles.card}><h2>🏆 Overall Ranking · All Classes</h2><p style={styles.muted}>Average percentage across tests where the student was present and marks were entered.</p><div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Rank</th><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Tests Counted</th><th style={styles.th}>Average %</th></tr></thead><tbody>{ranking.filter(s=>s.computedAverage>0).map((s,i)=><tr key={s.studentId||s.id}><td style={styles.td}><strong>#{i+1}</strong></td><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}>{tests.filter(t=>{const r=(t.results||{})[s.studentId||""];return r?.present&&r.marks!=null}).length}</td><td style={styles.td}><strong>{s.computedAverage.toFixed(2)}%</strong></td></tr>)}</tbody></table></div></div>
+      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📚 Test Library</h2><p style={styles.muted}>Browse tests class-wise and subject-wise.</p></div></div><div style={styles.filterBar}><select style={styles.filterInput} value={testLibraryClass} onChange={e=>setTestLibraryClass(e.target.value)}><option value="">All Classes</option>{Array.from(new Set(students.map(s=>s.className).filter(Boolean))).sort().map(v=><option key={v as string} value={v as string}>{v}</option>)}</select><select style={styles.filterInput} value={testLibrarySubject} onChange={e=>setTestLibrarySubject(e.target.value)}><option value="">All Subjects</option>{Array.from(new Set(tests.map(t=>t.subject).filter(Boolean))).sort().map(v=><option key={v as string} value={v}>{v}</option>)}</select></div>{(() => { const filteredTests=tests.filter(t=>(!testLibraryClass || !t.className || t.className===testLibraryClass)&&(!testLibrarySubject || t.subject===testLibrarySubject)); return testsLoading?<div style={styles.emptyBox}>Loading tests...</div>:filteredTests.length===0?<div style={styles.emptyBox}>No tests match the selected filters.</div>:filteredTests.map(test=>{const results=Object.values(test.results||{}) as TestResult[];const present=results.filter(r=>r?.present).length;const entered=results.filter(r=>r?.present&&r?.marks!=null);const avg=entered.length?entered.reduce((sum,r)=>sum+(Number(r.marks)/Number(test.total||1))*100,0)/entered.length:0;return <div key={test.id} style={styles.testCard}><div><div style={styles.homeworkMeta}><strong>{test.subject} · {test.name}</strong><span>{test.date}</span></div><p style={styles.muted}>{test.className||"All Classes"}{test.batch?` · ${test.batch}`:""} · {present} present · {entered.length} marks entered · Test average {avg.toFixed(1)}%</p></div><div style={styles.linkRow}>{test.questionPaperUrl&&<a style={styles.linkButton} href={test.questionPaperUrl} target="_blank" rel="noreferrer">📄 Question Paper</a>}{test.answerSheetUrl&&<a style={styles.linkButton} href={test.answerSheetUrl} target="_blank" rel="noreferrer">📝 Answer Sheet</a>}{isAdmin&&<button style={styles.secondaryButton} onClick={()=>setExpandedTestId(expandedTestId===test.id?null:(test.id||null))}>{expandedTestId===test.id?"Hide Results":"View Results"}</button>}{isAdmin&&<><button style={styles.editButton} onClick={()=>openEditTest(test)}>✏️ Edit</button><button style={styles.deleteButton} onClick={()=>deleteTest(test)}>🗑️ Delete</button></>}</div>{isAdmin&&expandedTestId===test.id&&<div style={styles.expandedTest}><div style={styles.expandedTestHeader}><strong>Student-wise result sheet</strong><span>{entered.length} marks entered · {present} present</span></div><div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Status</th><th style={styles.th}>Marks</th><th style={styles.th}>%</th></tr></thead><tbody>{students.filter(s=>s.studentId).filter(s=>!test.className||s.className===test.className).filter(s=>!test.batch||s.batch===test.batch).map(s=>{const r=(test.results||{})[s.studentId!];const pct=r?.present&&r.marks!=null?(Number(r.marks)/Number(test.total||1))*100:null;return <tr key={s.studentId}><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}>{r?.present===false?"Absent":r?.marks!=null?"Present":"Not entered"}</td><td style={styles.td}>{r?.present&&r.marks!=null?`${r.marks} / ${test.total}`:"—"}</td><td style={styles.td}>{pct==null?"—":`${pct.toFixed(1)}%`}</td></tr>})}</tbody></table></div></div>}</div>})})()}</div>
+      <div style={styles.card}><h2>🏆 Overall Ranking · All Classes</h2><p style={styles.muted}>Average percentage across tests where the student was present and marks were entered.</p><div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Rank</th><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Tests Counted</th><th style={styles.th}>Average %</th></tr></thead><tbody>{ranking.map((s)=><tr key={s.studentId||s.id}><td style={styles.td}><strong>#{s.rank}</strong></td><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}>{s.testsCounted}</td><td style={styles.td}><strong>{s.computedAverage.toFixed(2)}%</strong></td></tr>)}{unranked.map((s)=><tr key={s.studentId||s.id}><td style={styles.td}>—</td><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}>0</td><td style={styles.td}><span style={styles.muted}>Not ranked yet</span></td></tr>)}</tbody></table></div></div>
     </>;
   };
 
@@ -3452,516 +3522,127 @@ function FormField({
 const styles: {
   [key: string]: React.CSSProperties;
 } = {
-  centerPage: {
-    minHeight: "100vh",
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
-    background: "radial-gradient(circle at top right, #eef2ff 0, #f8fafc 34%, #f1f5f9 100%)",
-    fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-  },
-
-  loadingCard: {
-    background: "white",
-    padding: 40,
-    borderRadius: 16,
-    textAlign: "center",
-    boxShadow: "0 10px 30px rgba(0,0,0,0.08)",
-  },
-
-  loginPage: {
-    minHeight: "100vh",
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 20,
-    background: "radial-gradient(circle at 10% 10%, #eef2ff 0, #f8fafc 42%, #eef2f7 100%)",
-    fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-  },
-
-  loginCard: {
-    width: "100%",
-    maxWidth: 430,
-    background: "white",
-    padding: 35,
-    borderRadius: 22,
-    boxShadow: "0 30px 80px rgba(15,23,42,.14)",
-  },
-
-  logoCircle: {
-    width: 70,
-    height: 70,
-    borderRadius: "50%",
-    background: "linear-gradient(135deg,#eef2ff,#e0e7ff)",
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
-    fontSize: 35,
-    margin: "0 auto 20px",
-  },
-
-  loginTitle: {
-    textAlign: "center",
-    marginBottom: 8,
-  },
-
-  muted: {
-    color: "#6b7280",
-    marginTop: 5,
-  },
-
-  loginNote: {
-    textAlign: "center",
-    color: "#6b7280",
-    fontSize: 13,
-    marginTop: 20,
-  },
-
-  label: {
-    display: "block",
-    fontWeight: 600,
-    marginBottom: 7,
-    marginTop: 16,
-  },
-
-  input: {
-    width: "100%",
-    boxSizing: "border-box",
-    padding: "12px 14px",
-    border: "1px solid #d1d5db",
-    borderRadius: 9,
-    fontSize: 15,
-    outline: "none",
-  },
-
-  primaryButton: {
-    width: "100%",
-    border: "none",
-    borderRadius: 9,
-    padding: "13px 18px",
-    background: "linear-gradient(135deg,#4f46e5,#2563eb)",
-    color: "white",
-    fontWeight: 700,
-    fontSize: 15,
-    cursor: "pointer",
-    marginTop: 20,
-  },
-
-  primaryButtonSmall: {
-    border: "none",
-    borderRadius: 9,
-    padding: "11px 16px",
-    background: "linear-gradient(135deg,#4f46e5,#2563eb)",
-    color: "white",
-    fontWeight: 700,
-    cursor: "pointer",
-  },
-
-  secondaryButton: {
-    border: "1px solid #d1d5db",
-    borderRadius: 9,
-    padding: "11px 16px",
-    background: "white",
-    cursor: "pointer",
-  },
-
-  editButton: {
-    border: "none",
-    borderRadius: 7,
-    padding: "8px 12px",
-    background: "#f59e0b",
-    color: "white",
-    fontWeight: 700,
-    cursor: "pointer",
-  },
-
-  paidBadge: {
-    display: "inline-block",
-    padding: "6px 9px",
-    borderRadius: 20,
-    background: "#dcfce7",
-    color: "#166534",
-    fontWeight: 700,
-    fontSize: 12,
-  },
-
-  partialBadge: {
-    display: "inline-block",
-    padding: "6px 9px",
-    borderRadius: 20,
-    background: "#ffedd5",
-    color: "#9a3412",
-    fontWeight: 700,
-    fontSize: 12,
-  },
-
-  pendingBadge: {
-    display: "inline-block",
-    padding: "6px 9px",
-    borderRadius: 20,
-    background: "#fee2e2",
-    color: "#991b1b",
-    fontWeight: 700,
-    fontSize: 12,
-  },
-
-  paidButton: {
-    border: "none",
-    borderRadius: 7,
-    padding: "8px 12px",
-    background: "#16a34a",
-    color: "white",
-    fontWeight: 700,
-    cursor: "pointer",
-  },
-
-  logoutButton: {
-    border: "none",
-    borderRadius: 9,
-    padding: "10px 15px",
-    background: "linear-gradient(135deg,#ef4444,#dc2626)",
-    color: "white",
-    fontWeight: 700,
-    cursor: "pointer",
-  },
-
-  closeButton: {
-    border: "none",
-    background: "#f8fafc",
-    borderRadius: 8,
-    width: 35,
-    height: 35,
-    cursor: "pointer",
-    fontSize: 16,
-  },
-
-  errorBox: {
-    background: "#fee2e2",
-    color: "#991b1b",
-    padding: 12,
-    borderRadius: 8,
-    marginTop: 15,
-    wordBreak: "break-word",
-  },
-
-  successBox: {
-    background: "#dcfce7",
-    color: "#166534",
-    padding: 12,
-    borderRadius: 8,
-    marginTop: 20,
-    wordBreak: "break-word",
-  },
-
-  appPage: {
-    minHeight: "100vh",
-    background: "radial-gradient(circle at 100% 0%, #eef2ff 0, #f8fafc 35%, #eef2f7 100%)",
-    fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-  },
-
-  topbar: {
-    minHeight: 74,
-    background: "rgba(255,255,255,.86)",
-    borderBottom: "1px solid #e5e7eb",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "12px 22px",
-    boxSizing: "border-box",
-  },
-
-  topbarSub: {
-    margin: "4px 0 0",
-    color: "#6b7280",
-    fontSize: 13,
-  },
-
-  layout: {
-    display: "flex",
-    minHeight: "calc(100vh - 70px)",
-  },
-
-  sidebar: {
-    width: 250,
-    background: "linear-gradient(180deg,#0f172a,#111827 55%,#172554)",
-    padding: 18,
-    boxSizing: "border-box",
-  },
-
-  navButton: {
-    width: "100%",
-    textAlign: "left",
-    border: "none",
-    background: "transparent",
-    color: "#d1d5db",
-    padding: "12px 13px",
-    borderRadius: 11,
-    cursor: "pointer",
-    marginBottom: 7,
-    fontSize: 14,
-  },
-
-  navButtonActive: {
-    width: "100%",
-    textAlign: "left",
-    border: "none",
-    background: "linear-gradient(135deg,#6366f1,#2563eb)",
-    color: "white",
-    padding: "13px 14px",
-    borderRadius: 11,
-    cursor: "pointer",
-    marginBottom: 7,
-    fontSize: 14,
-    fontWeight: 700,
-  },
-
-  main: {
-    flex: 1,
-    padding: 30,
-    boxSizing: "border-box",
-    overflow: "auto",
-  },
-
-  pageHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 25,
-  },
-
-  grid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-    gap: 20,
-    marginBottom: 24,
-  },
-
-  statCard: {
-    background: "white",
-    borderRadius: 18,
-    padding: 20,
-    display: "flex",
-    alignItems: "center",
-    gap: 15,
-    boxShadow: "0 12px 30px rgba(15,23,42,.06)",
-  },
-
-  statIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: 15,
-    background: "linear-gradient(135deg,#eef2ff,#e0e7ff)",
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
-    fontSize: 24,
-  },
-
-  statTitle: {
-    margin: 0,
-    color: "#6b7280",
-    fontSize: 13,
-  },
-
-  statValue: {
-    margin: "5px 0 0",
-  },
-
-  card: {
-    background: "rgba(255,255,255,.94)",
-    borderRadius: 18,
-    padding: 24,
-    marginBottom: 22,
-    boxShadow: "0 16px 40px rgba(15,23,42,.08)",
-    border: "1px solid rgba(148,163,184,0.16)",
-  },
-
-  studentWelcome: {
-    background: "linear-gradient(135deg,#111827 0%,#312e81 52%,#2563eb 100%)",
-    color: "white",
-    padding: 30,
-    borderRadius: 22,
-    marginBottom: 24,
-    boxShadow: "0 20px 45px rgba(37,99,235,.22)",
-  },
-
-  twoColumn: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
-    gap: 20,
-  },
-
-  infoRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 20,
-    padding: "12px 0",
-    borderBottom: "1px solid #f0f0f0",
-  },
-
-  infoLabel: {
-    color: "#6b7280",
-  },
-
-  emptyBox: {
-    background: "linear-gradient(135deg,#f8fafc,#eef2ff)",
-    borderRadius: 14,
-    padding: 25,
-    textAlign: "center",
-    color: "#6b7280",
-  },
-
-  formHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-  },
-
-  formGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-    gap: 5,
-  },
-
-  formActions: {
-    display: "flex",
-    justifyContent: "flex-end",
-    gap: 10,
-    marginTop: 20,
-  },
-
-  tableWrapper: {
-    overflowX: "auto",
-  },
-
-  table: {
-    width: "100%",
-    borderCollapse: "collapse",
-    minWidth: 800,
-  },
-
-  th: {
-    textAlign: "left",
-    padding: 12,
-    background: "#f1f5f9",
-    borderBottom: "1px solid #e2e8f0",
-    fontSize: 13,
-  },
-
-  td: {
-    padding: 12,
-    borderBottom: "1px solid #f0f0f0",
-    fontSize: 14,
-  },
-
-  historyButton: {
-    border: "none",
-    borderRadius: 7,
-    padding: "8px 12px",
-    background: "#6366f1",
-    color: "white",
-    fontWeight: 700,
-    cursor: "pointer",
-  },
-
-  infoNotice: {
-    background: "#eff6ff",
-    color: "#1e40af",
-    padding: 14,
-    borderRadius: 9,
-    marginTop: 18,
-    marginBottom: 10,
-    lineHeight: 1.5,
-  },
-
-  monthFeeCard: {
-    border: "1px solid #e2e8f0",
-    borderRadius: 14,
-    padding: 16,
-    background: "#fafafa",
-  },
-
-  homeworkList: {
-    display: "grid",
-    gap: 14,
-  },
-
-  homeworkItem: {
-    border: "1px solid #e2e8f0",
-    borderRadius: 14,
-    padding: 16,
-    background: "#fafafa",
-  },
-
-  homeworkMeta: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 12,
-    color: "#4b5563",
-    fontSize: 13,
-    flexWrap: "wrap",
-  },
-
-  feeHistoryGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
-    gap: 12,
-    marginBottom: 16,
-  },
-
-  smallLabel: {
-    display: "block",
-    color: "#6b7280",
-    fontSize: 12,
-    marginBottom: 4,
-  },
-
-  paymentHistoryRow: {
-    display: "flex",
-    gap: 12,
-    flexWrap: "wrap",
-    padding: "10px 0",
-    borderBottom: "1px solid #e5e7eb",
-    fontSize: 14,
-  },
-
-  filterBar:{display:"flex",gap:10,flexWrap:"wrap",margin:"14px 0"},
-  filterInput:{padding:"10px 12px",border:"1px solid #cbd5e1",borderRadius:9,background:"#fff",minWidth:170},
-  quickGrid:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:12,marginTop:16},
-  quickAction:{border:"1px solid #e2e8f0",borderRadius:14,padding:14,background:"linear-gradient(135deg,#fff,#f8fafc)",display:"flex",alignItems:"center",gap:12,cursor:"pointer",textAlign:"left"},
+  centerPage:{minHeight:"100vh",display:"flex",justifyContent:"center",alignItems:"center",background:"linear-gradient(135deg,#eef2ff,#f8fafc 48%,#e0e7ff)",fontFamily:"Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"},
+  loadingCard:{background:"#fff",padding:42,borderRadius:24,textAlign:"center",boxShadow:"0 24px 70px rgba(15,23,42,.12)",border:"1px solid #e2e8f0"},
+  loginPage:{minHeight:"100vh",display:"flex",justifyContent:"center",alignItems:"center",padding:24,background:"radial-gradient(circle at 12% 10%,#dbeafe 0,#eef2ff 28%,#f8fafc 65%,#e0e7ff 100%)",fontFamily:"Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"},
+  loginCard:{width:"100%",maxWidth:460,background:"rgba(255,255,255,.94)",padding:42,borderRadius:28,boxShadow:"0 30px 90px rgba(15,23,42,.16)",border:"1px solid rgba(255,255,255,.8)"},
+  logoCircle:{width:76,height:76,borderRadius:22,background:"linear-gradient(135deg,#4f46e5,#2563eb)",display:"flex",justifyContent:"center",alignItems:"center",fontSize:35,margin:"0 auto 20px",boxShadow:"0 16px 30px rgba(37,99,235,.25)"},
+  loginTitle:{textAlign:"center",marginBottom:8,fontSize:28,letterSpacing:"-.5px"},
+  muted:{color:"#64748b",marginTop:5,lineHeight:1.55},
+  loginNote:{textAlign:"center",color:"#64748b",fontSize:13,marginTop:20},
+  label:{display:"block",fontWeight:700,marginBottom:7,marginTop:16,color:"#1e293b",fontSize:13},
+  input:{width:"100%",boxSizing:"border-box",padding:"13px 14px",border:"1px solid #cbd5e1",borderRadius:12,fontSize:14,outline:"none",background:"#fff",color:"#0f172a"},
+  primaryButton:{width:"100%",border:"none",borderRadius:12,padding:"13px 18px",background:"linear-gradient(135deg,#4f46e5,#2563eb)",color:"#fff",fontWeight:800,fontSize:14,cursor:"pointer",marginTop:20,boxShadow:"0 10px 22px rgba(37,99,235,.22)"},
+  primaryButtonSmall:{border:"none",borderRadius:11,padding:"11px 16px",background:"linear-gradient(135deg,#4f46e5,#2563eb)",color:"#fff",fontWeight:800,cursor:"pointer",boxShadow:"0 8px 18px rgba(37,99,235,.18)"},
+  secondaryButton:{border:"1px solid #dbe2ea",borderRadius:11,padding:"10px 14px",background:"#fff",color:"#334155",fontWeight:700,cursor:"pointer"},
+  editButton:{border:"none",borderRadius:10,padding:"9px 12px",background:"#f59e0b",color:"#fff",fontWeight:800,cursor:"pointer"},
+  paidBadge:{display:"inline-block",padding:"6px 10px",borderRadius:999,background:"#dcfce7",color:"#166534",fontWeight:800,fontSize:11},
+  partialBadge:{display:"inline-block",padding:"6px 10px",borderRadius:999,background:"#ffedd5",color:"#9a3412",fontWeight:800,fontSize:11},
+  pendingBadge:{display:"inline-block",padding:"6px 10px",borderRadius:999,background:"#fee2e2",color:"#991b1b",fontWeight:800,fontSize:11},
+  paidButton:{border:"none",borderRadius:10,padding:"9px 12px",background:"#16a34a",color:"#fff",fontWeight:800,cursor:"pointer"},
+  logoutButton:{border:"none",borderRadius:11,padding:"10px 15px",background:"#0f172a",color:"#fff",fontWeight:800,cursor:"pointer"},
+  closeButton:{border:"1px solid #e2e8f0",background:"#fff",borderRadius:10,width:36,height:36,cursor:"pointer",fontSize:16,color:"#475569"},
+  errorBox:{background:"#fff1f2",color:"#be123c",padding:13,borderRadius:12,marginTop:15,wordBreak:"break-word",border:"1px solid #fecdd3"},
+  successBox:{background:"#ecfdf5",color:"#047857",padding:13,borderRadius:12,marginTop:15,wordBreak:"break-word",border:"1px solid #a7f3d0"},
+  appPage:{minHeight:"100vh",background:"linear-gradient(180deg,#f8fafc 0%,#f1f5f9 100%)",fontFamily:"Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",color:"#0f172a"},
+  topbar:{position:"sticky",top:0,zIndex:20,minHeight:76,background:"rgba(255,255,255,.88)",backdropFilter:"blur(18px)",borderBottom:"1px solid rgba(148,163,184,.18)",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 28px",boxSizing:"border-box"},
+  topbarSub:{margin:"3px 0 0",color:"#64748b",fontSize:12},
+  topbarActions:{display:"flex",alignItems:"center",gap:12},
+  brandBlock:{display:"flex",alignItems:"center",gap:11},
+  brandMark:{width:42,height:42,borderRadius:13,display:"flex",alignItems:"center",justifyContent:"center",background:"linear-gradient(135deg,#4f46e5,#2563eb)",fontSize:22,boxShadow:"0 10px 22px rgba(37,99,235,.2)"},
+  userPill:{display:"flex",alignItems:"center",gap:9,padding:"6px 11px 6px 7px",border:"1px solid #e2e8f0",borderRadius:999,background:"#fff",fontWeight:700,fontSize:13},
+  avatarSmall:{width:30,height:30,borderRadius:"50%",overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center",background:"#eef2ff"},
+  layout:{display:"flex",minHeight:"calc(100vh - 76px)"},
+  sidebar:{width:238,background:"linear-gradient(180deg,#0b1220 0%,#101827 58%,#172554 100%)",padding:"22px 14px",boxSizing:"border-box",position:"sticky",top:76,height:"calc(100vh - 76px)",overflowY:"auto"},
+  navButton:{width:"100%",textAlign:"left",border:"1px solid transparent",background:"transparent",color:"#aab5c7",padding:"12px 13px",borderRadius:12,cursor:"pointer",marginBottom:6,fontSize:13,fontWeight:650},
+  navButtonActive:{width:"100%",textAlign:"left",border:"1px solid rgba(255,255,255,.1)",background:"linear-gradient(135deg,#4f46e5,#2563eb)",color:"#fff",padding:"12px 13px",borderRadius:12,cursor:"pointer",marginBottom:6,fontSize:13,fontWeight:800,boxShadow:"0 10px 22px rgba(37,99,235,.24)"},
+  main:{flex:1,padding:"32px clamp(18px,3vw,42px)",boxSizing:"border-box",overflow:"auto",maxWidth:1500,margin:"0 auto",width:"100%"},
+  pageHeader:{display:"flex",justifyContent:"space-between",alignItems:"flex-end",gap:18,marginBottom:24},
+  grid:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(205px,1fr))",gap:16,marginBottom:20},
+  statCard:{background:"rgba(255,255,255,.9)",borderRadius:18,padding:"18px 19px",display:"flex",alignItems:"center",gap:13,boxShadow:"0 12px 30px rgba(15,23,42,.06)",border:"1px solid #e7edf5"},
+  statIcon:{width:48,height:48,borderRadius:15,background:"linear-gradient(135deg,#eef2ff,#dbeafe)",display:"flex",justifyContent:"center",alignItems:"center",fontSize:22},
+  statTitle:{margin:0,color:"#64748b",fontSize:12,fontWeight:700},
+  statValue:{margin:"5px 0 0",fontSize:23,letterSpacing:"-.4px"},
+  card:{background:"rgba(255,255,255,.92)",borderRadius:20,padding:"22px 24px",marginBottom:18,boxShadow:"0 12px 34px rgba(15,23,42,.055)",border:"1px solid #e6ebf2"},
+  studentWelcome:{display:"flex",justifyContent:"space-between",alignItems:"center",gap:20,background:"linear-gradient(120deg,#0f172a 0%,#312e81 55%,#2563eb 100%)",color:"#fff",padding:"28px 30px",borderRadius:24,marginBottom:20,boxShadow:"0 20px 50px rgba(37,99,235,.22)"},
+  dashboardHero:{display:"flex",justifyContent:"space-between",alignItems:"center",gap:20,background:"linear-gradient(120deg,#0f172a,#1e1b4b 55%,#2563eb)",color:"#fff",padding:"26px 30px",borderRadius:24,marginBottom:20,boxShadow:"0 20px 50px rgba(37,99,235,.16)"},
+  heroEyebrow:{fontSize:11,fontWeight:900,letterSpacing:"1.6px",opacity:.75},
+  heroMetric:{minWidth:145,textAlign:"right",display:"flex",flexDirection:"column",gap:2},
+  heroMetricSpan:{},
+  heroDate:{display:"flex",flexDirection:"column",textAlign:"right",gap:3,opacity:.9},
+  twoColumn:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(310px,1fr))",gap:18},
+  dashboardColumns:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(330px,1fr))",gap:18},
+  infoRow:{display:"flex",justifyContent:"space-between",gap:20,padding:"12px 0",borderBottom:"1px solid #eef2f7"},
+  infoLabel:{color:"#64748b"},
+  emptyBox:{background:"linear-gradient(135deg,#f8fafc,#eef2ff)",borderRadius:15,padding:26,textAlign:"center",color:"#64748b",border:"1px dashed #dbe3ee"},
+  formHeader:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:15},
+  formGrid:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:4},
+  formActions:{display:"flex",justifyContent:"flex-end",gap:9,marginTop:18,flexWrap:"wrap"},
+  tableWrapper:{overflowX:"auto",border:"1px solid #e6ebf2",borderRadius:14},
+  table:{width:"100%",borderCollapse:"collapse",minWidth:820,background:"#fff"},
+  th:{textAlign:"left",padding:"12px 13px",background:"#f8fafc",borderBottom:"1px solid #e2e8f0",fontSize:11,textTransform:"uppercase",letterSpacing:".45px",color:"#64748b",whiteSpace:"nowrap"},
+  td:{padding:"12px 13px",borderBottom:"1px solid #eef2f7",fontSize:13,color:"#334155"},
+  historyButton:{border:"none",borderRadius:10,padding:"9px 12px",background:"#4f46e5",color:"#fff",fontWeight:800,cursor:"pointer"},
+  infoNotice:{background:"#eff6ff",color:"#1e40af",padding:14,borderRadius:12,marginTop:15,marginBottom:10,lineHeight:1.55,border:"1px solid #bfdbfe"},
+  monthFeeCard:{border:"1px solid #e2e8f0",borderRadius:15,padding:16,background:"#f8fafc"},
+  homeworkList:{display:"grid",gap:13},
+  homeworkItem:{border:"1px solid #e5eaf1",borderRadius:16,padding:17,background:"#fff",boxShadow:"0 6px 18px rgba(15,23,42,.035)"},
+  homeworkMeta:{display:"flex",justifyContent:"space-between",gap:12,color:"#64748b",fontSize:12,flexWrap:"wrap"},
+  feeHistoryGrid:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:10,marginBottom:16},
+  smallLabel:{display:"block",color:"#64748b",fontSize:11,marginBottom:4,fontWeight:700},
+  paymentHistoryRow:{display:"flex",gap:12,flexWrap:"wrap",padding:"11px 0",borderBottom:"1px solid #e5e7eb",fontSize:13},
+  filterBar:{display:"flex",gap:9,flexWrap:"wrap",margin:"14px 0"},
+  filterInput:{padding:"10px 12px",border:"1px solid #cbd5e1",borderRadius:10,background:"#fff",minWidth:170,outline:"none"},
+  quickGrid:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:10,marginTop:14},
+  quickAction:{border:"1px solid #e2e8f0",borderRadius:14,padding:14,background:"linear-gradient(135deg,#fff,#f8fafc)",display:"flex",alignItems:"center",gap:12,cursor:"pointer",textAlign:"left",color:"#0f172a"},
   directorEditor:{display:"flex",gap:18,alignItems:"flex-start"},
   profileHero:{display:"flex",alignItems:"center",gap:14,marginBottom:14},
-  avatarLarge:{width:72,height:72,borderRadius:"50%",background:"#eef2ff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:32,overflow:"hidden",border:"3px solid #fff",boxShadow:"0 8px 22px rgba(37,99,235,.15)"},
-  avatarDirector:{width:64,height:64,borderRadius:"50%",background:"#eef2ff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,overflow:"hidden",flexShrink:0},
+  avatarLarge:{width:76,height:76,borderRadius:"50%",background:"#eef2ff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:32,overflow:"hidden",border:"3px solid #fff",boxShadow:"0 10px 24px rgba(37,99,235,.15)"},
+  avatarDirector:{width:66,height:66,borderRadius:"50%",background:"#eef2ff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,overflow:"hidden",flexShrink:0,border:"3px solid #fff",boxShadow:"0 8px 20px rgba(37,99,235,.12)"},
   avatarImage:{width:"100%",height:"100%",objectFit:"cover"},
-  directorCard:{display:"flex",gap:14,alignItems:"center",padding:14,borderRadius:14,background:"linear-gradient(135deg,#f8fafc,#eef2ff)",border:"1px solid #e0e7ff"},
-  calendarCard:{padding:16,border:"1px solid #e5e7eb",borderRadius:16,background:"#fbfdff"},
-  calendarToolbar:{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,marginBottom:12},
-  monthInput:{padding:"7px 9px",border:"1px solid #cbd5e1",borderRadius:8,background:"#fff"},
+  directorCard:{display:"flex",gap:14,alignItems:"center",padding:16,borderRadius:16,background:"linear-gradient(135deg,#f8fafc,#eef2ff)",border:"1px solid #dbe3ff"},
+  calendarCard:{padding:18,border:"1px solid #e5eaf1",borderRadius:18,background:"#fbfdff"},
+  calendarToolbar:{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,marginBottom:14},
+  monthInput:{padding:"8px 10px",border:"1px solid #cbd5e1",borderRadius:9,background:"#fff"},
   calendarGrid:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:7},
-  calendarHead:{textAlign:"center",fontSize:11,fontWeight:800,color:"#64748b",padding:"5px 0"},
-  calendarDay:{aspectRatio:"1",display:"flex",alignItems:"center",justifyContent:"center",borderRadius:"50%",background:"#f1f5f9",fontSize:13,fontWeight:700,color:"#334155",maxWidth:42,margin:"auto",width:"100%"},
+  calendarHead:{textAlign:"center",fontSize:10,fontWeight:900,color:"#94a3b8",padding:"5px 0"},
+  calendarDay:{aspectRatio:"1",display:"flex",alignItems:"center",justifyContent:"center",borderRadius:"50%",background:"#f1f5f9",fontSize:13,fontWeight:800,color:"#475569",maxWidth:42,margin:"auto",width:"100%"},
   calendarPresent:{background:"#dcfce7",color:"#166534",boxShadow:"inset 0 0 0 2px #22c55e"},
   calendarAbsent:{background:"#fee2e2",color:"#991b1b",boxShadow:"inset 0 0 0 2px #ef4444"},
   sectionTitleRow:{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12},
-  noticeItem:{border:"1px solid #e5e7eb",borderRadius:12,padding:16,marginBottom:12,background:"#fff"},
-  noticeBadge:{display:"inline-block",padding:"5px 9px",borderRadius:999,background:"#eef2ff",color:"#3730a3",fontSize:11,fontWeight:800,letterSpacing:.5},
-  doneBadge:{display:"inline-block",padding:"6px 9px",borderRadius:999,background:"#dcfce7",color:"#166534",fontWeight:800,fontSize:12},
-  studentPicker:{border:"1px solid #e5e7eb",borderRadius:12,padding:12,background:"#fafafa"},
-  pickerToolbar:{display:"flex",gap:8,marginBottom:10},
-  studentPickerGrid:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:8,maxHeight:220,overflowY:"auto"},
-  studentPickerItem:{display:"flex",alignItems:"center",gap:8,padding:9,border:"1px solid #e5e7eb",borderRadius:9,background:"white",cursor:"pointer"},
-  completionSummary:{marginTop:12,padding:"10px 12px",borderRadius:9,background:"#f8fafc",fontSize:13},
+  noticeItem:{border:"1px solid #e5eaf1",borderRadius:15,padding:16,marginBottom:11,background:"#fff"},
+  noticeCompact:{padding:"12px 0",borderBottom:"1px solid #eef2f7"},
+  noticeBadge:{display:"inline-block",padding:"5px 9px",borderRadius:999,background:"#eef2ff",color:"#3730a3",fontSize:10,fontWeight:900,letterSpacing:.5},
+  doneBadge:{display:"inline-block",padding:"6px 10px",borderRadius:999,background:"#dcfce7",color:"#166534",fontWeight:800,fontSize:11},
+  studentPicker:{border:"1px solid #e5eaf1",borderRadius:14,padding:12,background:"#f8fafc"},
+  pickerToolbar:{display:"flex",gap:8,marginBottom:10,flexWrap:"wrap"},
+  studentPickerGrid:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:8,maxHeight:250,overflowY:"auto"},
+  studentPickerItem:{display:"flex",alignItems:"center",gap:8,padding:9,border:"1px solid #e5eaf1",borderRadius:10,background:"#fff",cursor:"pointer"},
+  completionSummary:{marginTop:12,padding:"11px 12px",borderRadius:10,background:"#f8fafc",fontSize:12,border:"1px solid #eef2f7"},
   defaulterList:{display:"flex",flexWrap:"wrap",gap:7,marginTop:10},
-  doneStudentButton:{border:"1px solid #bbf7d0",borderRadius:999,padding:"7px 10px",background:"#f0fdf4",color:"#166534",fontWeight:700,cursor:"pointer"},
-  notDoneStudentButton:{border:"1px solid #fecaca",borderRadius:999,padding:"7px 10px",background:"#fef2f2",color:"#991b1b",fontWeight:700,cursor:"pointer"},
-  warningBox:{marginTop:10,padding:12,borderRadius:10,background:"#fff7ed",color:"#9a3412",fontWeight:600,lineHeight:1.5},
+  doneStudentButton:{border:"1px solid #bbf7d0",borderRadius:999,padding:"7px 10px",background:"#f0fdf4",color:"#166534",fontWeight:800,cursor:"pointer"},
+  notDoneStudentButton:{border:"1px solid #fecaca",borderRadius:999,padding:"7px 10px",background:"#fef2f2",color:"#991b1b",fontWeight:800,cursor:"pointer"},
+  warningBox:{marginTop:10,padding:12,borderRadius:11,background:"#fff7ed",color:"#9a3412",fontWeight:700,lineHeight:1.5,border:"1px solid #fed7aa"},
   uploadGrid:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:12,marginTop:16},
-  uploadBox:{display:"flex",flexDirection:"column",gap:8,border:"1px dashed #cbd5e1",borderRadius:12,padding:16,background:"#f8fafc",fontWeight:700,cursor:"pointer"},
-  testCard:{border:"1px solid #e5e7eb",borderRadius:14,padding:16,marginBottom:12,background:"#fff",display:"flex",justifyContent:"space-between",gap:16,flexWrap:"wrap"},
+  uploadBox:{display:"flex",flexDirection:"column",gap:8,border:"1px dashed #cbd5e1",borderRadius:13,padding:16,background:"#f8fafc",fontWeight:800,cursor:"pointer"},
+  testCard:{border:"1px solid #e5eaf1",borderRadius:16,padding:17,marginBottom:12,background:"#fff",display:"flex",justifyContent:"space-between",gap:16,flexWrap:"wrap",boxShadow:"0 6px 18px rgba(15,23,42,.035)"},
   linkRow:{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"},
-  linkButton:{display:"inline-block",textDecoration:"none",border:"1px solid #c7d2fe",borderRadius:8,padding:"8px 11px",background:"#eef2ff",color:"#3730a3",fontWeight:700,fontSize:13},
-  deleteButton:{border:"none",borderRadius:7,padding:"8px 12px",background:"#dc2626",color:"white",fontWeight:700,cursor:"pointer"},
-  compactInput:{width:100,padding:"8px 9px",border:"1px solid #d1d5db",borderRadius:8,boxSizing:"border-box"},
-  summaryMiniCard:{background:"linear-gradient(135deg,#fff,#f8fafc)",border:"1px solid #e5e7eb",borderRadius:14,padding:15,display:"flex",flexDirection:"column",gap:5},
+  linkButton:{display:"inline-block",textDecoration:"none",border:"1px solid #c7d2fe",borderRadius:9,padding:"8px 11px",background:"#eef2ff",color:"#3730a3",fontWeight:800,fontSize:12},
+  deleteButton:{border:"none",borderRadius:10,padding:"9px 12px",background:"#dc2626",color:"#fff",fontWeight:800,cursor:"pointer"},
+  compactInput:{width:100,padding:"8px 9px",border:"1px solid #cbd5e1",borderRadius:9,boxSizing:"border-box"},
+  summaryMiniCard:{background:"linear-gradient(135deg,#fff,#f8fafc)",border:"1px solid #e5eaf1",borderRadius:15,padding:15,display:"flex",flexDirection:"column",gap:5},
+  liveBadge:{fontSize:10,fontWeight:900,letterSpacing:1,color:"#047857",background:"#ecfdf5",border:"1px solid #a7f3d0",borderRadius:999,padding:"6px 9px"},
+  metricList:{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:8,marginTop:15},
+  progressWrap:{marginTop:18},
+  progressLabel:{display:"flex",justifyContent:"space-between",fontSize:12,color:"#64748b",fontWeight:700,marginBottom:7},
+  progressTrack:{height:9,borderRadius:999,background:"#e2e8f0",overflow:"hidden"},
+  progressFill:{height:"100%",borderRadius:999,background:"linear-gradient(90deg,#4f46e5,#22c55e)"},
+  textButton:{border:"none",background:"transparent",color:"#4f46e5",fontWeight:800,cursor:"pointer",padding:5},
+  topRankList:{display:"grid",gap:7,marginTop:13},
+  rankRow:{display:"flex",alignItems:"center",gap:10,padding:"11px 12px",border:"1px solid #edf1f6",borderRadius:12,background:"#fbfdff",fontSize:13},
+  rankRowCurrent:{border:"1px solid #c7d2fe",background:"#eef2ff"},
+  rankBadge:{width:58,height:58,borderRadius:18,display:"flex",alignItems:"center",justifyContent:"center",background:"linear-gradient(135deg,#f59e0b,#f97316)",color:"#fff",fontSize:18,fontWeight:900,boxShadow:"0 10px 22px rgba(245,158,11,.22)"},
+  expandedTest:{marginTop:14,padding:14,borderRadius:14,background:"#f8fafc",border:"1px solid #e5eaf1",width:"100%"},
+  expandedTestHeader:{display:"flex",justifyContent:"space-between",gap:10,marginBottom:10,color:"#475569",fontSize:12},
 };
+
