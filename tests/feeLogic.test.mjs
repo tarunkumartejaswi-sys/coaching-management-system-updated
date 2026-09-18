@@ -92,3 +92,16 @@ test('previous due records are explicitly identifiable', async () => {
   assert.equal(fee.pendingAmount, 900);
   assert.equal(fee.isPreviousDue, true);
 });
+
+test('class tuition settings normalize a class name and fee', async () => {
+  const { buildClassTuitionRecord } = await import('../src/feeLogic.js');
+  assert.deepEqual(
+    buildClassTuitionRecord({ className: ' Class 1 ', monthlyFee: 500 }),
+    { className: 'Class 1', monthlyFee: 500 }
+  );
+});
+
+test('previous dues use a separate record id so they never overwrite a real month', async () => {
+  const { getPreviousDueRecordId } = await import('../src/feeLogic.js');
+  assert.equal(getPreviousDueRecordId('2026-08', 'abc123'), 'previous-2026-08-abc123');
+});

@@ -79,3 +79,17 @@ export function buildPreviousDueFeeRecord({ studentId, monthId, amount = 0, dueD
     createdAt: new Date().toISOString(),
   };
 }
+
+
+export function buildClassTuitionRecord({ className = '', monthlyFee = 0 } = {}) {
+  return {
+    className: String(className).trim(),
+    monthlyFee: Math.max(Number(monthlyFee) || 0, 0),
+  };
+}
+
+export function getPreviousDueRecordId(monthId, suffix = '') {
+  const cleanMonth = String(monthId || '').trim();
+  const cleanSuffix = String(suffix || '').trim();
+  return `previous-${cleanMonth}-${cleanSuffix}`;
+}

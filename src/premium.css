@@ -119,3 +119,13 @@ radial-gradient(circle at 90% 20%,rgba(14,165,233,.08),transparent 24%),#f6f8fc}
 .testChart{display:flex;align-items:flex-end;gap:10px;min-height:230px;padding:18px 8px 4px;border:1px solid #e2e8f0;border-radius:16px;background:linear-gradient(180deg,#f8fbff,#fff);overflow-x:auto}
 .testChartItem{min-width:58px;height:205px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:7px}.testChartBarWrap{height:175px;width:38px;display:flex;align-items:flex-end;justify-content:center;background:repeating-linear-gradient(to top,#eef2f7 0,#eef2f7 1px,transparent 1px,transparent 35px);border-radius:8px 8px 0 0}.testChartBar{width:28px;min-height:4px;border-radius:7px 7px 3px 3px;background:linear-gradient(180deg,#38bdf8,#2563eb);position:relative;transition:height .3s ease}.testChartBar span{position:absolute;top:-20px;left:50%;transform:translateX(-50%);font-size:10px;font-weight:800;color:#1e3a8a;white-space:nowrap}.testChartItem small{max-width:75px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#64748b;font-size:10px}
 @media(max-width:600px){.testChart{min-height:205px}.testChartItem{height:180px}.testChartBarWrap{height:150px;width:34px}.testChartBar{width:24px}}
+
+/* Simplified fee navigation and mobile-friendly fee records */
+.simpleFeeList{display:grid;gap:10px}
+.studentFeeLink,.monthFeeLink{width:100%;border:1px solid #e2e8f0;background:#fff;border-radius:14px;padding:14px 16px;display:grid;grid-template-columns:minmax(0,1.3fr) minmax(180px,1fr) auto;align-items:center;gap:14px;text-align:left;cursor:pointer;color:#0f172a}
+.studentFeeLink:hover,.monthFeeLink:hover{border-color:#93c5fd;box-shadow:0 5px 18px rgba(15,23,42,.07)}
+.studentFeeLink>div,.monthFeeLink>div{display:flex;gap:8px;flex-direction:column}
+.monthFeeLink>div:nth-child(2){display:flex;flex-direction:row;justify-content:flex-end;gap:18px;flex-wrap:wrap}
+.previousDueRow,.paymentHistoryCard{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:14px;align-items:center;border:1px solid #e2e8f0;background:#fff;border-radius:14px;padding:14px 16px}
+.previousDueRow>div,.paymentHistoryCard>div:first-child{display:flex;flex-direction:column;gap:5px}
+@media(max-width:700px){.studentFeeLink,.monthFeeLink,.previousDueRow,.paymentHistoryCard{grid-template-columns:1fr}.monthFeeLink>div:nth-child(2){justify-content:flex-start}.studentFeeLink>div:nth-child(2){align-items:flex-start}.previousDueRow .linkRow,.paymentHistoryCard .linkRow{justify-content:flex-start}.appPage .quickGrid{grid-template-columns:1fr!important}}

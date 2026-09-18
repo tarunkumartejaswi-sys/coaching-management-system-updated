@@ -14,7 +14,7 @@ import {
 } from "firebase/firestore";
 
 import app from "./config";
-import { buildMonthlyFeeRecord, getBillingMonthId, getFeeDueDate, getMonthlyFeeStatus } from "../src/feeLogic.js";
+import { buildMonthlyFeeRecord, buildClassTuitionRecord, getPreviousDueRecordId, getBillingMonthId, getFeeDueDate, getMonthlyFeeStatus } from "../src/feeLogic.js";
 import { calculateFeeAfterPaymentDelete } from "../src/sessionLogic.js";
 import { calculateFeeAfterPaymentEdit, buildPreviousDueFeeRecord } from "../src/feeLogic.js";
 
@@ -57,7 +57,9 @@ const db = getFirestore(app);
  * paidAmount?: number,
  * pendingAmount?: number,
  * status?: ('pending'|'partial'|'paid'),
- * paymentHistory?: Payment[]
+ * paymentHistory?: Payment[],
+ * note?: string,
+ * isPreviousDue?: boolean
  * }} Fee
  */
 
@@ -154,16 +156,36 @@ export const ensureCurrentMonthFee = async (student) => {
   const feeRef = doc(db, "fees", student.studentId, "months", monthId);
   const existing = await getDoc(feeRef);
 
-  if (existing.exists()) {
+  if (existing.exists() && existing.data()?.isPreviousDue !== true) {
     return {
       id: existing.id,
       ...existing.data(),
     };
   }
 
-  const monthlyFee = Number(
+  // Older builds stored a previous due directly at YYYY-MM. Migrate that
+  // legacy record before creating the real monthly tuition record so the two
+  // concepts can safely coexist.
+  if (existing.exists() && existing.data()?.isPreviousDue === true) {
+    const legacy = existing.data();
+    const legacyId = getPreviousDueRecordId(monthId, "legacy");
+    await setDoc(doc(db, "fees", student.studentId, "months", legacyId), { ...legacy, migratedFrom: monthId, migratedAt: new Date().toISOString() });
+    await deleteDoc(feeRef);
+  }
+
+  let monthlyFee = Number(
     student.monthlyFee ?? student.feeDue ?? 0
   );
+
+  // Class tuition is the source of truth when the Admin has configured a
+  // tuition fee for this class. Student-level monthlyFee remains a fallback
+  // for older records that have not been migrated to class tuition yet.
+  if (student.className) {
+    const classFeeSnap = await getDoc(doc(db, "classFees", String(student.className).trim()));
+    if (classFeeSnap.exists()) {
+      monthlyFee = Number(classFeeSnap.data()?.monthlyFee || 0);
+    }
+  }
 
   // Billing is month-based: when the calendar month changes, a fresh fee
   // document is created for the new month. The previous month's payments
@@ -344,14 +366,44 @@ export const deleteFeeMonth = async (studentId, monthId) => {
   await syncStudentFeeDue(studentId);
 };
 
-export const deletePreviousDue = async (studentId, monthId) => {
+export const deletePreviousDue = async (studentId, monthId, recordId = "") => {
   if (!studentId || !monthId) throw new Error("Student ID and month are required");
-  const feeRef = doc(db, "fees", studentId, "months", monthId);
+  const feeRef = doc(db, "fees", studentId, "months", recordId || monthId);
   const snap = await getDoc(feeRef);
-  if (!snap.exists()) throw new Error("Fee record not found");
+  if (!snap.exists()) throw new Error("Previous due not found");
   if (snap.data()?.isPreviousDue !== true) throw new Error("This record is not marked as a previous due");
   await deleteDoc(feeRef);
   await syncStudentFeeDue(studentId);
+};
+
+export const getClassTuitionFees = async () => {
+  const snapshot = await getDocs(collection(db, "classFees"));
+  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+};
+
+export const setClassTuitionFee = async (className, monthlyFee) => {
+  const record = buildClassTuitionRecord({ className, monthlyFee });
+  if (!record.className) throw new Error("Class name is required");
+  await setDoc(doc(db, "classFees", record.className), { ...record, updatedAt: new Date().toISOString() }, { merge: true });
+
+  // Keep existing student records in sync for dashboard/profile fallbacks and
+  // update the current month's charge without erasing payments already made.
+  const studentsSnapshot = await getDocs(query(collection(db, "students"), where("className", "==", record.className)));
+  await Promise.all(studentsSnapshot.docs.map(async (studentDoc) => {
+    const sid = studentDoc.id;
+    await updateDoc(studentDoc.ref, { monthlyFee: record.monthlyFee });
+    const monthId = getBillingMonthId();
+    const feeRef = doc(db, "fees", sid, "months", monthId);
+    const feeSnap = await getDoc(feeRef);
+    if (feeSnap.exists() && feeSnap.data()?.isPreviousDue !== true) {
+      const fee = feeSnap.data();
+      const paid = Math.max(Number(fee.paidAmount) || 0, 0);
+      const pending = Math.max(record.monthlyFee - paid, 0);
+      await updateDoc(feeRef, { monthlyFee: record.monthlyFee, pendingAmount: pending, status: getMonthlyFeeStatus(record.monthlyFee, pending, paid), updatedAt: new Date().toISOString() });
+      await syncStudentFeeDue(sid);
+    }
+  }));
+  return record;
 };
 
 export const saveStudentFee = async (studentId, feeData) => {
@@ -388,16 +440,23 @@ export const markFeeAsPaid = async (studentId, paidAmount) => {
 /** Create a fee record for a specific month. */
 export const createFeeMonth = async (studentId, monthId, monthlyFee, paidAmount = 0, dueDate = "", note = "", isPreviousDue = false) => {
   if (!studentId || !monthId) throw new Error("Student ID and month are required");
-  const feeRef = doc(db, "fees", studentId, "months", monthId);
-  const existing = await getDoc(feeRef);
-  if (existing.exists()) throw new Error(`Fee for ${monthId} already exists. Use Edit instead.`);
 
   const monthly = Math.max(Number(monthlyFee) || 0, 0);
   const paid = Math.min(Math.max(Number(paidAmount) || 0, 0), monthly);
   const pending = Math.max(monthly - paid, 0);
 
+  // Previous dues are deliberately stored under their own document id. This
+  // prevents adding an August due from overwriting the real August tuition
+  // month and lets Admin delete the previous due independently.
+  const recordId = isPreviousDue
+    ? getPreviousDueRecordId(monthId, Date.now())
+    : monthId;
+  const feeRef = doc(db, "fees", studentId, "months", recordId);
+  const existing = await getDoc(feeRef);
+  if (existing.exists()) throw new Error(`Fee record for ${monthId} already exists. Use Edit instead.`);
+
   const record = isPreviousDue
-    ? buildPreviousDueFeeRecord({ studentId, monthId, amount: monthly, dueDate, note })
+    ? { ...buildPreviousDueFeeRecord({ studentId, monthId, amount: monthly, dueDate, note }), id: recordId }
     : {
         studentId,
         monthId,
@@ -413,9 +472,8 @@ export const createFeeMonth = async (studentId, monthId, monthlyFee, paidAmount 
       };
 
   await setDoc(feeRef, record);
-
   await syncStudentFeeDue(studentId);
-  return { id: monthId, ...record };
+  return { id: recordId, ...record };
 };
 
 /** Edit a monthly fee record while preserving its payment history and paid amount. */

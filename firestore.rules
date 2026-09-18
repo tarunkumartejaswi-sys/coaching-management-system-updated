@@ -102,6 +102,11 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
+    match /classFees/{classId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
     match /loginHistory/{eventId} {
       allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
       allow read: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
