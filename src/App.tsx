@@ -3720,7 +3720,7 @@ export default function App() {
             💰 Fees
           </button>
 
-          {isAdmin && (
+          {(isAdmin || isCR) && (
             <button
               style={
                 page === "homework" ? styles.navButtonActive : styles.navButton
