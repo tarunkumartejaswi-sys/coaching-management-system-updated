@@ -32,7 +32,6 @@ h1,h2,h3{letter-spacing:-.35px}
   .appPage .pageHeader button{width:100%}
   .appPage .grid{grid-template-columns:1fr!important}
   .appPage .formGrid{grid-template-columns:1fr!important}
-  .appPage .uploadGrid{grid-template-columns:1fr!important}
   .appPage .quickGrid{grid-template-columns:1fr!important}
   .appPage .profileHero{align-items:flex-start!important;flex-wrap:wrap}
   .appPage table{min-width:720px}

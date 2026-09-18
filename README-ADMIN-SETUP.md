@@ -11,7 +11,7 @@ This package is the renovated CMF build. It keeps the Firebase data model alread
 - Top-performer ranking
 - Latest notices
 - Quick actions
-- Director profile editor with photo
+- Director profile editor (text details only)
 
 ### Students
 - Searchable student directory
@@ -33,8 +33,7 @@ This package is the renovated CMF build. It keeps the Firebase data model alread
 - Class / batch / subject aware tests
 - Per-student Present / Absent
 - Marks and percentage
-- Question paper upload
-- Answer sheet / solution upload
+- Simple test creation and result entry (no file uploads)
 - Expandable student-wise result sheet for each test
 - Overall average across all counted tests
 - Competition-style ranking across every class
@@ -62,7 +61,7 @@ This package is the renovated CMF build. It keeps the Firebase data model alread
 ### Notices / Teachers / Director
 - Cleaner notice board and priority badges
 - Faculty directory with add/edit/delete
-- Director details and profile photo controlled by Admin and visible to students
+- Director details controlled by Admin and visible to students (no profile photo upload)
 
 ## IMPORTANT: upload the project correctly
 
@@ -76,7 +75,6 @@ The repository root must directly contain:
 - `firebase/`
 - `api/`
 - `firestore.rules`
-- `storage.rules`
 
 Do **not** upload a parent folder such as `cmf10_final/` and do not keep older folders such as `cmf10`, `CMF 11`, or `CMF 9` beside the new app. Vercel must build this exact root project.
 
@@ -126,9 +124,8 @@ If the Change Login screen says that Firebase Admin environment variables are no
 Deploy both:
 
 - `firestore.rules`
-- `storage.rules`
 
-The app uses Firebase Authentication and Firestore. File uploads for profile photos and test papers are intentionally disabled because Firebase Storage is not enabled.
+The app uses Firebase Authentication and Firestore only. The following file uploads are intentionally disabled because Firebase Storage is not enabled: student profile photo, director profile photo, question paper, and answer sheet/solution.
 
 ## Recommended first test after deployment
 

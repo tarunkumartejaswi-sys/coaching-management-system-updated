@@ -11,8 +11,5 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 
-// Explicitly bind Storage to the project's default bucket so profile/director uploads
-// do not depend on browser SDK bucket inference.
-export const FIREBASE_STORAGE_BUCKET = `gs://${firebaseConfig.storageBucket}`;
 
 export default app;
