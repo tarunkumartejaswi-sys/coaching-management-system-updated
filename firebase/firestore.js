@@ -10,6 +10,7 @@ import {
   deleteDoc,
   query,
   orderBy,
+  where,
 } from "firebase/firestore";
 
 import app from "./config";
@@ -27,7 +28,10 @@ const db = getFirestore(app);
  * average?: number,
  * monthlyFee?: number,
  * feeDue?: number,
- * authUid?: string
+ * authUid?: string,
+ * isCR?: boolean,
+ * crSince?: string,
+ * crEligible?: boolean
  * }} Student
  */
 
@@ -412,4 +416,35 @@ export const updateHomework = async (homeworkId, homework) => {
 export const deleteHomework = async (homeworkId) => {
   if (!homeworkId) throw new Error("Homework ID is required");
   await deleteDoc(doc(db, "homework", homeworkId));
+};
+
+/* =========================================
+   CR CHANGE REQUESTS
+========================================= */
+
+export const getCrChangeRequests = async (submittedBy = "") => {
+  const base = collection(db, "crChangeRequests");
+  const requestQuery = submittedBy
+    ? query(base, where("submittedBy", "==", submittedBy))
+    : query(base, orderBy("createdAt", "desc"));
+  const snapshot = await getDocs(requestQuery);
+  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+};
+
+export const createCrChangeRequest = async (request) => {
+  const ref = doc(collection(db, "crChangeRequests"));
+  await setDoc(ref, {
+    ...request,
+    status: "pending",
+    createdAt: new Date().toISOString(),
+  });
+  return ref.id;
+};
+
+export const updateCrChangeRequest = async (requestId, patch) => {
+  if (!requestId) throw new Error("Request ID is required");
+  await updateDoc(doc(db, "crChangeRequests", requestId), {
+    ...patch,
+    reviewedAt: new Date().toISOString(),
+  });
 };
