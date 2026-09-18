@@ -4,13 +4,20 @@ export function getCrEligibility({
   rank = Infinity,
   average = 0,
   pendingHomework = 0,
-} = {}) {
+} = {}, criteria = {}) {
+  const {
+    minAttendance = 90,
+    minAverage = 80,
+    maxRank = 5,
+    maxFeeDue = 0,
+    maxPendingHomework = 0,
+  } = criteria;
   const failedCriteria = [];
-  if (Number(feeDue) > 0) failedCriteria.push('fee');
-  if (Number(attendance) <= 90) failedCriteria.push('attendance');
-  if (Number(rank) < 1 || Number(rank) > 5) failedCriteria.push('rank');
-  if (Number(average) <= 80) failedCriteria.push('average');
-  if (Number(pendingHomework) > 0) failedCriteria.push('homework');
+  if (Number(feeDue) > Number(maxFeeDue)) failedCriteria.push('fee');
+  if (Number(attendance) <= Number(minAttendance)) failedCriteria.push('attendance');
+  if (Number(rank) < 1 || Number(rank) > Number(maxRank)) failedCriteria.push('rank');
+  if (Number(average) <= Number(minAverage)) failedCriteria.push('average');
+  if (Number(pendingHomework) > Number(maxPendingHomework)) failedCriteria.push('homework');
   return { eligible: failedCriteria.length === 0, failedCriteria };
 }
 

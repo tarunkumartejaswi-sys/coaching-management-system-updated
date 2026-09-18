@@ -97,6 +97,16 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
+    match /crSettings/{settingId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /classRepresentatives/{crId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
     match /crChangeRequests/{requestId} {
       allow read: if isAdmin() ||
         ((isCR() || (hasUserProfile() && userData().role == 'student')) &&
