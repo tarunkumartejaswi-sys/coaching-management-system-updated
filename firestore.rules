@@ -15,7 +15,13 @@ service cloud.firestore {
 
     match /studentDirectory/{studentId} {
       allow read: if signedIn();
-      allow create, update, delete: if isAdmin();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() ||
+        (signedIn() &&
+         get(/databases/$(database)/documents/students/$(studentId)).data.authUid == request.auth.uid &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+           "name", "photoUrl"
+         ]));
     }
 
     match /students/{studentId} {

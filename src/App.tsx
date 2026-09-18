@@ -625,11 +625,11 @@ export default function App() {
         photoUrl,
       };
       await setDoc(doc(db, "students", studentData.studentId), allowed, { merge: true });
+      // Students may update only their own name/photo in studentDirectory.
+      // Class and batch remain admin-controlled.
       await setDoc(doc(db, "studentDirectory", studentData.studentId), {
         studentId: studentData.studentId,
         name: allowed.name,
-        className: studentData.className || "",
-        batch: studentData.batch || "",
         photoUrl: allowed.photoUrl || "",
       }, { merge: true });
       const updated = await getStudentById(studentData.studentId);
@@ -2753,22 +2753,35 @@ export default function App() {
                     fee?.pendingAmount ?? Math.max(monthly - paid, 0)
                   );
 
-                  const totalStudentPending = Number(student.feeDue || 0);
+                  const totalStudentPending = Math.max(Number(student.feeDue || 0), 0);
 
+                  // Status is based on the student's TOTAL outstanding balance,
+                  // not only the current month's balance. If every pending due
+                  // is cleared, the student must always show Paid.
                   const status =
-                    fee?.status ||
-                    (remaining === 0
+                    totalStudentPending === 0
                       ? "paid"
                       : paid > 0
                       ? "partial"
-                      : "pending");
+                      : "pending";
 
                   return (
                     <tr key={student.studentId || student.id}>
                       <td style={styles.td}>{student.studentId || "-"}</td>
 
                       <td style={styles.td}>
-                        <strong>{student.name || "-"}</strong>
+                        <button
+                          type="button"
+                          style={styles.feeStudentButton}
+                          onClick={() => openFeeHistory(student)}
+                          title="View total fee details"
+                        >
+                          <span style={styles.feeAvatar}>{(student.name || "?").trim().charAt(0).toUpperCase()}</span>
+                          <span>
+                            <strong>{student.name || "-"}</strong>
+                            <small style={styles.feeStudentHint}>View total fee details</small>
+                          </span>
+                        </button>
                       </td>
 
                       <td style={styles.td}>{student.className || "-"}</td>
@@ -2785,7 +2798,11 @@ export default function App() {
                         <strong>₹{remaining}</strong>
                       </td>
 
-                      <td style={styles.td}>₹{totalStudentPending}</td>
+                      <td style={styles.td}>
+                        <strong style={{color: totalStudentPending === 0 ? "#15803d" : "#b91c1c"}}>
+                          ₹{totalStudentPending.toLocaleString("en-IN")}
+                        </strong>
+                      </td>
 
                       <td style={styles.td}>
                         <span
@@ -2840,7 +2857,7 @@ export default function App() {
                             style={styles.historyButton}
                             onClick={() => openFeeHistory(student)}
                           >
-                            📜 History
+                            📜 View Details
                           </button>
                         </div>
                       </td>
@@ -3131,7 +3148,39 @@ export default function App() {
             {selectedFeeHistory.length === 0 ? (
               <div style={styles.emptyBox}>No fee history yet.</div>
             ) : (
-              selectedFeeHistory.map((fee) => (
+              <>
+                {(() => {
+                  const totalCharged = selectedFeeHistory.reduce((sum, fee) => sum + Number(fee.monthlyFee || 0), 0);
+                  const totalPaid = selectedFeeHistory.reduce((sum, fee) => sum + Number(fee.paidAmount || 0), 0);
+                  const totalPending = selectedFeeHistory.reduce((sum, fee) => sum + Number(fee.pendingAmount || 0), 0);
+                  const overallStatus = totalPending === 0 ? "paid" : totalPaid > 0 ? "partial" : "pending";
+                  const paidPercent = totalCharged > 0 ? Math.min(100, Math.round((totalPaid / totalCharged) * 100)) : 100;
+                  return (
+                    <div style={styles.feeDetailHero}>
+                      <div>
+                        <span style={styles.smallLabel}>TOTAL FEE SUMMARY</span>
+                        <h3 style={{margin:"3px 0 5px",fontSize:22}}>₹{totalCharged.toLocaleString("en-IN")}</h3>
+                        <p style={{...styles.muted,margin:0}}>All recorded months for this student</p>
+                      </div>
+                      <span style={overallStatus === "paid" ? styles.paidBadge : overallStatus === "partial" ? styles.partialBadge : styles.pendingBadge}>
+                        {overallStatus === "paid" ? "🟢 Paid" : overallStatus === "partial" ? "🟠 Partial" : "🔴 Due"}
+                      </span>
+                      <div style={styles.feeDetailMetrics}>
+                        <div><span style={styles.smallLabel}>Total Paid</span><strong style={{color:"#15803d"}}>₹{totalPaid.toLocaleString("en-IN")}</strong></div>
+                        <div><span style={styles.smallLabel}>Total Pending</span><strong style={{color: totalPending === 0 ? "#15803d" : "#b91c1c"}}>₹{totalPending.toLocaleString("en-IN")}</strong></div>
+                        <div><span style={styles.smallLabel}>Collection</span><strong>{paidPercent}%</strong></div>
+                      </div>
+                      <div style={{...styles.progressTrack,marginTop:12}}><div style={{...styles.progressFill,width:`${paidPercent}%`}} /></div>
+                      {totalPending === 0 && <div style={styles.paidNotice}>✅ All recorded fee dues are cleared. Payment status: <strong>PAID</strong>.</div>}
+                    </div>
+                  );
+                })()}
+
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,margin:"18px 0 10px",flexWrap:"wrap"}}>
+                  <div><h3 style={{margin:0}}>📅 Month-wise Details</h3><p style={{...styles.muted,margin:"4px 0 0"}}>Payments, dues and payment history for every recorded month.</p></div>
+                </div>
+
+                {selectedFeeHistory.map((fee) => (
                 <div key={fee.id} style={{ marginBottom: 20 }}>
                   <h3 style={{ marginBottom: 8 }}>📅 {fee.monthId}</h3>
 
@@ -3191,7 +3240,8 @@ export default function App() {
                     )}
                   </div>
                 </div>
-              ))
+                ))}
+              </>
             )}
           </div>
         )}
@@ -3601,6 +3651,12 @@ const styles: {
   th:{textAlign:"left",padding:"12px 13px",background:"#f8fafc",borderBottom:"1px solid #e2e8f0",fontSize:11,textTransform:"uppercase",letterSpacing:".45px",color:"#64748b",whiteSpace:"nowrap"},
   td:{padding:"12px 13px",borderBottom:"1px solid #eef2f7",fontSize:13,color:"#334155"},
   historyButton:{border:"none",borderRadius:10,padding:"9px 12px",background:"#4f46e5",color:"#fff",fontWeight:800,cursor:"pointer"},
+  feeStudentButton:{border:"none",background:"transparent",padding:0,display:"flex",alignItems:"center",gap:9,cursor:"pointer",textAlign:"left",color:"#0f172a"},
+  feeAvatar:{width:34,height:34,borderRadius:"50%",display:"inline-flex",alignItems:"center",justifyContent:"center",background:"#eef2ff",color:"#3730a3",fontWeight:900,flexShrink:0},
+  feeStudentHint:{display:"block",fontSize:10,color:"#64748b",marginTop:2,fontWeight:600},
+  feeDetailHero:{border:"1px solid #c7d2fe",borderRadius:18,padding:18,background:"linear-gradient(135deg,#f8fafc,#eef2ff)",marginBottom:18},
+  feeDetailMetrics:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10,marginTop:16},
+  paidNotice:{marginTop:12,padding:"10px 12px",borderRadius:10,background:"#f0fdf4",border:"1px solid #bbf7d0",color:"#166534",fontSize:12},
   infoNotice:{background:"#eff6ff",color:"#1e40af",padding:14,borderRadius:12,marginTop:15,marginBottom:10,lineHeight:1.55,border:"1px solid #bfdbfe"},
   monthFeeCard:{border:"1px solid #e2e8f0",borderRadius:15,padding:16,background:"#f8fafc"},
   homeworkList:{display:"grid",gap:13},
