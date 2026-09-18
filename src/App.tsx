@@ -417,8 +417,15 @@ export default function App() {
       const allFees = await getAllFees();
       setFees(allFees);
 
-      const refreshedHistory = await getStudentFeeHistory(paymentStudent.studentId);
-      setSelectedFeeHistory(refreshedHistory);
+      // No student is selected while the main Fees page is loading.
+      // Do not read the payment student here because it is null
+      // is intentionally null until the admin opens a payment action.
+      if (selectedFeeStudent?.studentId) {
+        const refreshedHistory = await getStudentFeeHistory(selectedFeeStudent.studentId);
+        setSelectedFeeHistory(refreshedHistory);
+      } else {
+        setSelectedFeeHistory([]);
+      }
 
       const updatedStudents = await getStudents();
       setStudents(updatedStudents);
