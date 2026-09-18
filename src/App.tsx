@@ -1040,22 +1040,6 @@ export default function App() {
     };
   }, []);
 
-  const getMonthlyStudentReport = (student: Student | null, monthId: string) => {
-    if (!student?.studentId) return null;
-    const sid = student.studentId;
-    const attendance = attendanceDays
-      .filter(d => String(d.date || "").startsWith(monthId))
-      .map(d => ({ date: d.date, status: getStudentAttendanceStatus(d, sid, student.authUid) }))
-      .filter(x => x.status);
-    const monthTests = tests.filter(t => String(t.date || "").startsWith(monthId));
-    const testRows = monthTests.map(t => { const r=(t.results||{})[sid]; return { date:t.date, name:t.name, marks:r?.present ? r.marks : null, total:t.total }; }).filter(x => x.marks !== null && x.marks !== undefined);
-    const hw = homeworkForStudent(student).filter(h => String(h.dueDate || h.homeworkDate || "").startsWith(monthId)).map(h => ({ dueDate:h.dueDate || h.homeworkDate, completed:Boolean(((h as any).completion || {})[sid]) }));
-    const fee = studentFeeHistory.find(f => f.monthId === monthId) || { monthlyFee:0, paidAmount:0, pendingAmount:0 };
-    return buildMonthlyStudentReport({ monthId, attendance, tests:testRows, homework:hw, fee });
-  };
-
-  const getStudentTestGraph = (student: Student | null) => student?.studentId ? getTestPercentages(tests, student.studentId) : [];
-
   /* =========================================================
      LOGIN
   ========================================================= */
@@ -2184,22 +2168,6 @@ export default function App() {
     );
   }
 
-  const getMonthlyStudentReport = (student: Student | null, monthId: string) => {
-    if (!student?.studentId) return null;
-    const sid = student.studentId;
-    const attendance = attendanceDays
-      .filter(d => String(d.date || "").startsWith(monthId))
-      .map(d => ({ date: d.date, status: getStudentAttendanceStatus(d, sid, student.authUid) }))
-      .filter(x => x.status);
-    const monthTests = tests.filter(t => String(t.date || "").startsWith(monthId));
-    const testRows = monthTests.map(t => { const r=(t.results||{})[sid]; return { date:t.date, name:t.name, marks:r?.present ? r.marks : null, total:t.total }; }).filter(x => x.marks !== null && x.marks !== undefined);
-    const hw = homeworkForStudent(student).filter(h => String(h.dueDate || h.homeworkDate || "").startsWith(monthId)).map(h => ({ dueDate:h.dueDate || h.homeworkDate, completed:Boolean(((h as any).completion || {})[sid]) }));
-    const fee = studentFeeHistory.find(f => f.monthId === monthId) || { monthlyFee:0, paidAmount:0, pendingAmount:0 };
-    return buildMonthlyStudentReport({ monthId, attendance, tests:testRows, homework:hw, fee });
-  };
-
-  const getStudentTestGraph = (student: Student | null) => student?.studentId ? getTestPercentages(tests, student.studentId) : [];
-
   /* =========================================================
      LOGIN
   ========================================================= */
@@ -2351,7 +2319,7 @@ export default function App() {
         <div style={styles.studentShell}>
           <aside style={styles.studentSidebar}>
             <div style={styles.studentNavLabel}>{isCR ? "CLASS REPRESENTATIVE PORTAL" : "STUDENT PORTAL"}</div>
-            [["dashboard", "🏠", "Dashboard"],
+            {[["dashboard", "🏠", "Dashboard"],
               ["profile", "👤", "My Profile"],
               ["attendance", "📅", "Attendance"],
               ["results", "📝", "Tests & Results"],
@@ -3302,7 +3270,7 @@ export default function App() {
       {isCR && <><div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>🛡️ CR Control Center</h2><p style={styles.muted}>Manage only your assigned class. Official changes require Admin approval.</p></div></div><div style={styles.grid}><StatCard title="Class Students" value={String(students.filter(s=>s.className===studentData?.className).length)} icon="👨‍🎓"/><StatCard title="Class Attendance" value={`${Math.round((students.filter(s=>s.className===studentData?.className).reduce((a,s)=>a+Number(s.attendance||0),0)/Math.max(1,students.filter(s=>s.className===studentData?.className).length)))}%`} icon="📅"/><StatCard title="Class Homework" value={String(homework.filter(h=>h.className===studentData?.className).length)} icon="📚"/><StatCard title="My Average" value={`${crAverage.toFixed(1)}%`} icon="📊"/></div><TestPerformanceChart points={getStudentTestGraph(studentData)} /><h3 style={{marginBottom:6}}>📊 Class Test Average</h3><TestPerformanceChart points={tests.filter(t=>!studentData?.className || t.className===studentData.className).map(t=>{const vals=Object.entries(t.results||{}).filter(([sid,r]:any)=>r?.present&&r.marks!=null && students.some(s=>s.studentId===sid && s.className===studentData?.className)).map(([sid,r]:any)=>(Number(r.marks)/Number(t.total||1))*100);return {name:t.name||t.subject||"Test",date:t.date||"",percentage:vals.length?Number((vals.reduce((a:number,b:number)=>a+b,0)/vals.length).toFixed(1)):0};}).filter(p=>p.percentage>0).slice(0,12).reverse()} /></div><div style={styles.card}><h2>🛡️ CR Permissions</h2><div style={styles.quickGrid}>
         <button style={styles.quickAction} onClick={() => setPage("attendance")}><span style={{fontSize:24}}>📅</span><span><strong>Attendance</strong><small style={styles.muted}>Manage your assigned class</small></span></button>
         <button style={styles.quickAction} onClick={() => setPage("homework")}><span style={{fontSize:24}}>📚</span><span><strong>Homework</strong><small style={styles.muted}>Add and manage class homework</small></span></button>
-      </div><div style={styles.infoNotice}>CR changes to official Attendance/Homework records are sent to Admin for approval. You cannot edit fees, marks, teachers or student accounts.</div></div>}
+      </div><div style={styles.infoNotice}>CR changes to official Attendance/Homework records are sent to Admin for approval. You cannot edit fees, marks, teachers or student accounts.</div></div></>}
     </>;
   };
 
