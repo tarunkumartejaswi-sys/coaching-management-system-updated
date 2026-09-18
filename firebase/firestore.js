@@ -14,6 +14,8 @@ import {
 } from "firebase/firestore";
 
 import app from "./config";
+import { buildMonthlyFeeRecord, getBillingMonthId, getFeeDueDate, getMonthlyFeeStatus } from "../src/feeLogic.js";
+import { calculateFeeAfterPaymentDelete } from "../src/sessionLogic.js";
 
 // Firebase docs recommend getFirestore(app) for the default client database.
 // The app is initialized once in ./config before this module requests Firestore.
@@ -97,19 +99,11 @@ export const getStudentById = async (studentId) => {
    fees/{studentId}/months/{YYYY-MM}
 ========================================= */
 
-const getMonthId = (date = new Date()) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  return `${year}-${month}`;
-};
+const getMonthId = (date = new Date()) => getBillingMonthId(date);
 
-const getDueDate = (date = new Date()) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  return `${year}-${month}-10`;
-};
+const getDueDate = (date = new Date()) => getFeeDueDate(date);
 
-export const getCurrentMonthId = () => getMonthId();
+export const getCurrentMonthId = () => getBillingMonthId();
 
 /** @returns {Promise<Fee|null>} */
 export const getCurrentMonthFee = async (studentId) => {
@@ -170,17 +164,14 @@ export const ensureCurrentMonthFee = async (student) => {
     student.monthlyFee ?? student.feeDue ?? 0
   );
 
-  const newFee = {
+  // Billing is month-based: when the calendar month changes, a fresh fee
+  // document is created for the new month. The previous month's payments
+  // remain untouched. This makes the renewal deterministic even if the admin
+  // opens the portal a few days after the 1st.
+  const newFee = buildMonthlyFeeRecord({
     studentId: student.studentId,
-    monthId,
     monthlyFee,
-    dueDate: getDueDate(),
-    paidAmount: 0,
-    pendingAmount: monthlyFee,
-    status: monthlyFee > 0 ? "pending" : "paid",
-    paymentHistory: [],
-    createdAt: new Date().toISOString(),
-  };
+  });
 
   await setDoc(feeRef, newFee);
 
@@ -191,6 +182,20 @@ export const ensureCurrentMonthFee = async (student) => {
 };
 
 /** @returns {Promise<Fee[]>} */
+export const ensureCurrentMonthFeesForStudents = async (students = []) => {
+  const validStudents = students.filter((student) => student?.studentId);
+  let created = 0;
+
+  for (const student of validStudents) {
+    const before = await getDoc(doc(db, "fees", student.studentId, "months", getBillingMonthId()));
+    if (!before.exists()) created += 1;
+    await ensureCurrentMonthFee(student);
+    await syncStudentFeeDue(student.studentId);
+  }
+
+  return created;
+};
+
 export const getAllFees = async () => {
   // Read each student's month subcollection explicitly. This is more
   // reliable with Firestore security rules than a collectionGroup query.
@@ -277,7 +282,7 @@ export const recordFeePayment = async (
   await updateDoc(feeRef, {
     paidAmount: newPaidAmount,
     pendingAmount: newPendingAmount,
-    status: newPendingAmount === 0 ? "paid" : "partial",
+    status: getMonthlyFeeStatus(monthlyFee, newPendingAmount, newPaidAmount),
     paymentHistory: [...history, payment],
     updatedAt: new Date().toISOString(),
   });
@@ -296,6 +301,29 @@ export const syncStudentFeeDue = async (studentId) => {
   });
 
   return totalPending;
+};
+
+export const deleteFeePayment = async (studentId, monthId, paymentIndex) => {
+  if (!studentId || !monthId) throw new Error("Student ID and month are required");
+  const feeRef = doc(db, "fees", studentId, "months", monthId);
+  const snap = await getDoc(feeRef);
+  if (!snap.exists()) throw new Error("Fee record not found");
+  const updated = calculateFeeAfterPaymentDelete(snap.data(), Number(paymentIndex));
+  await updateDoc(feeRef, {
+    paymentHistory: updated.paymentHistory,
+    paidAmount: updated.paidAmount,
+    pendingAmount: updated.pendingAmount,
+    status: updated.status,
+    updatedAt: new Date().toISOString(),
+  });
+  await syncStudentFeeDue(studentId);
+  return updated;
+};
+
+export const deleteFeeMonth = async (studentId, monthId) => {
+  if (!studentId || !monthId) throw new Error("Student ID and month are required");
+  await deleteDoc(doc(db, "fees", studentId, "months", monthId));
+  await syncStudentFeeDue(studentId);
 };
 
 export const saveStudentFee = async (studentId, feeData) => {
@@ -347,7 +375,7 @@ export const createFeeMonth = async (studentId, monthId, monthlyFee, paidAmount 
     dueDate: dueDate || `${monthId}-10`,
     paidAmount: paid,
     pendingAmount: pending,
-    status: pending === 0 ? "paid" : paid > 0 ? "partial" : "pending",
+    status: getMonthlyFeeStatus(monthly, pending, paid),
     paymentHistory: [],
     note,
     createdAt: new Date().toISOString(),
@@ -372,12 +400,49 @@ export const updateFeeMonth = async (studentId, monthId, monthlyFee, dueDate = "
   await updateDoc(feeRef, {
     monthlyFee: monthly,
     pendingAmount: pending,
-    status: pending === 0 ? "paid" : paid > 0 ? "partial" : "pending",
+    status: getMonthlyFeeStatus(monthly, pending, paid),
     ...(dueDate ? { dueDate } : {}),
     updatedAt: new Date().toISOString(),
   });
 
   await syncStudentFeeDue(studentId);
+};
+
+export const recordLoginHistory = async (entry) => {
+  const ref = doc(collection(db, "loginHistory"));
+  await setDoc(ref, { ...entry, createdAt: new Date().toISOString() });
+  return ref.id;
+};
+
+export const createUserSession = async (uid, data = {}) => {
+  if (!uid) return;
+  await setDoc(doc(db, "userSessions", uid), {
+    uid,
+    ...data,
+    lastSeenAt: new Date().toISOString(),
+    active: true,
+  }, { merge: true });
+};
+
+export const touchUserSession = async (uid) => {
+  if (!uid) return;
+  await updateDoc(doc(db, "userSessions", uid), { lastSeenAt: new Date().toISOString(), active: true });
+};
+
+export const getLoginHistory = async () => {
+  const snapshot = await getDocs(query(collection(db, "loginHistory"), orderBy("loginAt", "desc")));
+  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+};
+
+export const getUserSessions = async () => {
+  const snapshot = await getDocs(collection(db, "userSessions"));
+  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+};
+
+export const getUserSession = async (uid) => {
+  if (!uid) return null;
+  const snap = await getDoc(doc(db, "userSessions", uid));
+  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
 };
 
 export default db;

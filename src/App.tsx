@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { onAuthStateChanged } from "firebase/auth";
-import { doc, setDoc, updateDoc, getDoc, getDocs, collection, query, orderBy, deleteDoc } from "firebase/firestore";
+import { doc, setDoc, updateDoc, getDoc, getDocs, collection, query, orderBy, deleteDoc, onSnapshot } from "firebase/firestore";
 
 import auth, {
   loginUser,
@@ -22,6 +22,7 @@ import db, {
   updateHomework,
   deleteHomework,
   ensureCurrentMonthFee,
+  ensureCurrentMonthFeesForStudents,
   recordFeePayment,
   syncStudentFeeDue,
   createFeeMonth,
@@ -29,10 +30,19 @@ import db, {
   getCrChangeRequests,
   createCrChangeRequest,
   updateCrChangeRequest,
+  deleteFeePayment,
+  deleteFeeMonth,
+  recordLoginHistory,
+  createUserSession,
+  touchUserSession,
+  getLoginHistory,
+  getUserSessions,
 } from "../firebase/firestore";
 
 import { getUserProfile } from "../firebase/user";
 import { getCrEligibility, isHomeworkPending } from "./crLogic.js";
+import { getBillingMonthId, getMonthlyFeeStatus } from "./feeLogic.js";
+import { buildLoginHistoryEntry } from "./sessionLogic.js";
 import "./premium.css";
 
 /* =========================================================
@@ -197,6 +207,11 @@ export default function App() {
   const [studentFeeHistory, setStudentFeeHistory] = useState<Fee[]>([]);
   const [feeLoading, setFeeLoading] = useState(false);
   const [feeMessage, setFeeMessage] = useState("");
+  const [loginHistory, setLoginHistory] = useState<any[]>([]);
+  const [userSessions, setUserSessions] = useState<any[]>([]);
+  const [loginHistoryLoading, setLoginHistoryLoading] = useState(false);
+  const [loginHistoryMessage, setLoginHistoryMessage] = useState("");
+  const [remoteLogoutLoading, setRemoteLogoutLoading] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(true);
 
@@ -590,6 +605,86 @@ export default function App() {
   }, [page, isAdmin, students.length]);
 
   /* =========================================================
+     LOGIN HISTORY / REMOTE LOGOUT
+  ========================================================= */
+
+  const loadLoginHistory = async () => {
+    if (!isAdmin) return;
+    setLoginHistoryLoading(true);
+    setLoginHistoryMessage("");
+    try {
+      const [history, sessions] = await Promise.all([getLoginHistory(), getUserSessions()]);
+      setLoginHistory(history);
+      setUserSessions(sessions);
+    } catch (error: any) {
+      console.error("Login history error:", error);
+      setLoginHistoryMessage(`Unable to load login history: ${error?.message || "Unknown error"}`);
+    } finally {
+      setLoginHistoryLoading(false);
+    }
+  };
+
+  const remoteLogoutStudent = async (student: Student) => {
+    if (!isAdmin || !student.authUid) return;
+    if (!window.confirm(`Log out ${student.name || "this student"} from all active devices?`)) return;
+    setRemoteLogoutLoading(student.authUid);
+    setLoginHistoryMessage("");
+    try {
+      const token = await user?.getIdToken(true);
+      const response = await fetch("/api/admin-session-control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: "logoutAll", studentAuthUid: student.authUid }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Remote logout failed");
+      setLoginHistoryMessage(`${student.name || "Student"} was logged out from all active devices. ✅`);
+      await loadLoginHistory();
+    } catch (error: any) {
+      console.error("Remote logout error:", error);
+      setLoginHistoryMessage(`Unable to log out student: ${error?.message || "Unknown error"}`);
+    } finally {
+      setRemoteLogoutLoading(null);
+    }
+  };
+
+  useEffect(() => {
+    if (page === "loginHistory" && isAdmin) loadLoginHistory();
+  }, [page, isAdmin]);
+
+  const handleDeleteFeePayment = async (student: Student, fee: Fee, paymentIndex: number) => {
+    if (!isAdmin || !student.studentId || !fee.monthId) return;
+    const payment = fee.paymentHistory?.[paymentIndex];
+    if (!payment) return;
+    if (!window.confirm(`Delete payment of ₹${payment.amount} for ${fee.monthId}?`)) return;
+    try {
+      await deleteFeePayment(student.studentId, fee.monthId, paymentIndex);
+      const history = await getStudentFeeHistory(student.studentId);
+      setSelectedFeeHistory(history);
+      setFees(await getAllFees());
+      setStudents(await getStudents());
+      setFeeMessage("Payment deleted and fee totals recalculated. ✅");
+    } catch (error: any) {
+      setFeeMessage(`Unable to delete payment: ${error?.message || "Unknown error"}`);
+    }
+  };
+
+  const handleDeleteFeeMonth = async (student: Student, fee: Fee) => {
+    if (!isAdmin || !student.studentId || !fee.monthId) return;
+    if (!window.confirm(`Delete the entire ${fee.monthId} fee record for ${student.name || "this student"}? All payments recorded in this month will be removed.`)) return;
+    try {
+      await deleteFeeMonth(student.studentId, fee.monthId);
+      const history = await getStudentFeeHistory(student.studentId);
+      setSelectedFeeHistory(history);
+      setFees(await getAllFees());
+      setStudents(await getStudents());
+      setFeeMessage(`Fee month ${fee.monthId} deleted and totals recalculated. ✅`);
+    } catch (error: any) {
+      setFeeMessage(`Unable to delete fee month: ${error?.message || "Unknown error"}`);
+    }
+  };
+
+  /* =========================================================
      ADD STUDENT
   ========================================================= */
 
@@ -765,23 +860,36 @@ export default function App() {
   ========================================================= */
 
   useEffect(() => {
+    let activeSessionCleanup: (() => void) | null = null;
+    let trackedUid = "";
+
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (activeSessionCleanup) {
+        activeSessionCleanup();
+        activeSessionCleanup = null;
+      }
+
       setUser(currentUser);
 
       if (!currentUser) {
+        if (trackedUid) {
+          sessionStorage.removeItem(`cmf-session-start-${trackedUid}`);
+          sessionStorage.removeItem(`cmf-login-history-${trackedUid}`);
+          trackedUid = "";
+        }
         setProfile(null);
         setStudentData(null);
         setStudentFee(null);
         setStudentFeeHistory([]);
         setStudents([]);
         setLoading(false);
-
         return;
       }
 
+      trackedUid = currentUser.uid;
+
       try {
         const userProfile = await getUserProfile(currentUser.uid);
-
         const normalizedProfile = userProfile
           ? { ...userProfile, role: String(userProfile.role || "").trim().toLowerCase() }
           : null;
@@ -789,32 +897,62 @@ export default function App() {
         setProfile(normalizedProfile);
         await loadCrCriteria();
 
+        // Login history and live-session tracking are intentionally limited to
+        // student/CR accounts. Admin accounts do not appear in the student
+        // login history dashboard.
+        if (["student", "cr"].includes(normalizedProfile?.role || "")) {
+          const sessionStartedAt = sessionStorage.getItem(`cmf-session-start-${currentUser.uid}`) || new Date().toISOString();
+          sessionStorage.setItem(`cmf-session-start-${currentUser.uid}`, sessionStartedAt);
+          try {
+            await createUserSession(currentUser.uid, {
+              studentId: normalizedProfile?.studentId || "",
+              name: normalizedProfile?.name || currentUser.displayName || "",
+              role: normalizedProfile?.role || "",
+              email: currentUser.email || normalizedProfile?.email || "",
+              sessionStartedAt,
+            });
+            const historyLoggedKey = `cmf-login-history-${currentUser.uid}`;
+            if (!sessionStorage.getItem(historyLoggedKey)) {
+              await recordLoginHistory(buildLoginHistoryEntry({
+                uid: currentUser.uid,
+                studentId: normalizedProfile?.studentId || "",
+                name: normalizedProfile?.name || currentUser.displayName || "",
+                role: normalizedProfile?.role || "",
+                email: currentUser.email || normalizedProfile?.email || "",
+              }));
+              sessionStorage.setItem(historyLoggedKey, "1");
+            }
+          } catch (sessionError) {
+            console.error("Session tracking error:", sessionError);
+          }
+
+          const stopSessionListener = onSnapshot(doc(db, "userSessions", currentUser.uid), async (snap) => {
+            const data: any = snap.exists() ? snap.data() : {};
+            if (data.forceLogoutAt && new Date(data.forceLogoutAt).getTime() > new Date(sessionStartedAt).getTime()) {
+              await logoutUser();
+            }
+          });
+          const heartbeat = window.setInterval(() => { touchUserSession(currentUser.uid).catch(() => {}); }, 60000);
+          activeSessionCleanup = () => {
+            stopSessionListener();
+            window.clearInterval(heartbeat);
+          };
+        }
+
         if (normalizedProfile?.studentId && ["student", "cr"].includes(normalizedProfile.role)) {
           const ownStudent = await getStudentById(normalizedProfile.studentId);
-
           setStudentData(ownStudent);
           setProfileDraft(ownStudent || {});
           await loadDirector();
 
-          // Students/CRs are read-only for fee records. The old code attempted
-          // to create the current-month fee here, but Firestore correctly
-          // reserves fee writes for Admin. That denied write was unnecessary
-          // during login and could make the portal appear broken.
           const ownFee = await getFeeByStudentId(normalizedProfile.studentId);
           setStudentFee(ownFee);
-
-          const ownFeeHistory = await getStudentFeeHistory(
-            normalizedProfile.studentId
-          );
-
+          const ownFeeHistory = await getStudentFeeHistory(normalizedProfile.studentId);
           setStudentFeeHistory(ownFeeHistory);
           const directorySnapshot = await getDocs(collection(db, "studentDirectory"));
           const directoryRows = directorySnapshot.docs.map((item: any) => ({ id: item.id, ...item.data() })) as Student[];
           setDirectoryStudents(directoryRows);
 
-          // A CR needs the same student roster used by the Admin attendance
-          // and homework screens. Normal students must remain restricted to
-          // their own record, so only an assigned CR loads the full roster.
           if (normalizedProfile.role === "cr" || ownStudent?.isCR === true) {
             const allStudents = await getStudents();
             setStudents(allStudents);
@@ -826,9 +964,18 @@ export default function App() {
           await loadDirector();
           await loadTeachers();
           const allStudents = await getStudents();
-
           setStudents(allStudents);
           setDirectoryStudents(allStudents);
+          if (normalizedProfile?.role === "admin") {
+            try {
+              await ensureCurrentMonthFeesForStudents(allStudents);
+              const refreshedStudents = await getStudents();
+              setStudents(refreshedStudents);
+              setDirectoryStudents(refreshedStudents);
+            } catch (feeError) {
+              console.error("Monthly fee renewal error:", feeError);
+            }
+          }
           await Promise.all(allStudents.filter((s: Student) => s.studentId).map((s: Student) => setDoc(doc(db, "studentDirectory", s.studentId!), { studentId: s.studentId, name: s.name || "", className: s.className || "", batch: s.batch || "" }, { merge: true })));
         }
       } catch (error) {
@@ -838,7 +985,10 @@ export default function App() {
       }
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if (activeSessionCleanup) activeSessionCleanup();
+    };
   }, []);
 
   /* =========================================================
@@ -867,6 +1017,10 @@ export default function App() {
   ========================================================= */
 
   const handleLogout = async () => {
+    if (user?.uid) {
+      sessionStorage.removeItem(`cmf-session-start-${user.uid}`);
+      sessionStorage.removeItem(`cmf-login-history-${user.uid}`);
+    }
     await logoutUser();
 
     setPage("dashboard");
@@ -1748,7 +1902,7 @@ export default function App() {
       return;
     }
 
-    const currentMonth = new Date().toISOString().slice(0, 7);
+    const currentMonth = getBillingMonthId();
     const amount = Number(addFeeAmount);
     if (addFeeMonth > currentMonth) {
       setFeeMessage("You can add only the current or previous months.");
@@ -2422,7 +2576,7 @@ export default function App() {
                   <div><span style={styles.smallLabel}>Due</span><strong>₹{studentFee?.pendingAmount??0}</strong></div>
                 </div>
                 <h3>📜 Payment History</h3>
-                {studentFeeHistory.length===0?<div style={styles.emptyBox}>No fee history available.</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Month</th><th style={styles.th}>Fee</th><th style={styles.th}>Paid</th><th style={styles.th}>Due</th><th style={styles.th}>Status</th><th style={styles.th}>Payment Date(s)</th></tr></thead><tbody>{studentFeeHistory.map(f=> <tr key={f.id}><td style={styles.td}>{f.monthId||"-"}</td><td style={styles.td}>₹{f.monthlyFee||0}</td><td style={styles.td}>₹{f.paidAmount||0}</td><td style={styles.td}>₹{f.pendingAmount||0}</td><td style={styles.td}><span style={f.status==="paid"?styles.paidBadge:f.status==="partial"?styles.partialBadge:styles.pendingBadge}>{f.status==="paid"?"🟢 Paid":f.status==="partial"?"🟠 Partial":"🔴 Due"}</span></td><td style={styles.td}>{(f.paymentHistory||[]).map((p,i)=><div key={i}>{p.date}{p.method?` · ${p.method}`:""} · ₹{p.amount}</div>)}</td></tr>)}</tbody></table></div>}
+                {studentFeeHistory.length===0?<div style={styles.emptyBox}>No fee history available.</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Month</th><th style={styles.th}>Fee</th><th style={styles.th}>Paid</th><th style={styles.th}>Due</th><th style={styles.th}>Status</th><th style={styles.th}>Payment Date(s)</th></tr></thead><tbody>{studentFeeHistory.map(f=> <tr key={f.id}><td style={styles.td}>{f.monthId||"-"}</td><td style={styles.td}>₹{f.monthlyFee||0}</td><td style={styles.td}>₹{f.paidAmount||0}</td><td style={styles.td}>₹{f.pendingAmount||0}</td><td style={styles.td}><span style={getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="paid"?styles.paidBadge:getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="partial"?styles.partialBadge:styles.pendingBadge}>{getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="paid"?"🟢 Paid":getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="partial"?"🟠 Partial":"🔴 Due"}</span></td><td style={styles.td}>{(f.paymentHistory||[]).map((p,i)=><div key={i}>{p.date}{p.method?` · ${p.method}`:""} · ₹{p.amount}</div>)}</td></tr>)}</tbody></table></div>}
               </div>
             )}
 
@@ -2541,6 +2695,7 @@ export default function App() {
               ["📚","Homework",homework.length,"homework"],
               ["📢","Notices",notices.length,"notices"],
               ["💰","Pending Fees",`₹${totalFeesDue}`,"fees"],
+              ...(isAdmin ? [["🔐","Login History","Monitor","loginHistory"]] : []),
             ].map(([icon,label,value,target])=><button key={String(target)} style={styles.quickAction} onClick={()=>setPage(String(target))}><span>{icon}</span><div><small>{label}</small><strong>{value}</strong></div><b>›</b></button>)}
           </div>
         </div>
@@ -2992,7 +3147,7 @@ export default function App() {
         <div style={styles.card}><h2>⭐ CR Eligibility</h2><p style={styles.muted}>All five conditions must be satisfied for student application.</p><div style={styles.eligibilityList}>{[["Fee pending = ₹0",feePendingDetail<=crCriteria.maxFeeDue],[`Attendance > ${crCriteria.minAttendance}%`,stats.percentage>crCriteria.minAttendance],[`Rank 1–${crCriteria.maxRank}`,Boolean(ranking && ranking.rank>=1 && ranking.rank<=crCriteria.maxRank)],[`Average > ${crCriteria.minAverage}%`,average>crCriteria.minAverage],["No pending homework",pending<=crCriteria.maxPendingHomework]].map(([label,ok])=><div key={label} style={styles.eligibilityRow}><span>{ok ? "✅" : "❌"}</span><strong>{label}</strong><small>{ok ? "Satisfied" : "Not satisfied"}</small></div>)}</div>{student.isCR ? <div style={styles.paidNotice}>⭐ This student is currently a Class Representative.</div> : <div style={styles.infoNotice}>{eligibility.eligible ? "Eligible to apply for CR." : `Not eligible yet. ${eligibility.failedCriteria.length} condition(s) remain.`}</div>}</div>
       </div>
       <div style={styles.card}><h2>📝 Test Results</h2><div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Test</th><th style={styles.th}>Subject</th><th style={styles.th}>Date</th><th style={styles.th}>Marks</th><th style={styles.th}>%</th></tr></thead><tbody>{tests.filter(t => (t.results || {})[student.studentId || ""]).map(t=>{const r=(t.results||{})[student.studentId||""];const pct=r?.present&&r.marks!=null?(Number(r.marks)/Number(t.total||1))*100:null;return <tr key={t.id}><td style={styles.td}>{t.name}</td><td style={styles.td}>{t.subject}</td><td style={styles.td}>{t.date}</td><td style={styles.td}>{r?.present?`${r.marks ?? "—"} / ${t.total}`:"Absent"}</td><td style={styles.td}>{pct==null?"—":`${pct.toFixed(1)}%`}</td></tr>})}</tbody></table></div></div>
-      <div style={styles.card}><h2>💰 Fee Record</h2>{historyForStudentDetail.length===0?<div style={styles.emptyBox}>No fee history recorded.</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Month</th><th style={styles.th}>Fee</th><th style={styles.th}>Paid</th><th style={styles.th}>Pending</th><th style={styles.th}>Status</th></tr></thead><tbody>{historyForStudentDetail.map(f=><tr key={f.id}><td style={styles.td}>{f.monthId}</td><td style={styles.td}>₹{f.monthlyFee||0}</td><td style={styles.td}>₹{f.paidAmount||0}</td><td style={styles.td}>₹{f.pendingAmount||0}</td><td style={styles.td}><span style={f.status==="paid"?styles.paidBadge:f.status==="partial"?styles.partialBadge:styles.pendingBadge}>{f.status==="paid"?"🟢 Paid":f.status==="partial"?"🟠 Partial":"🔴 Due"}</span></td></tr>)}</tbody></table></div>}</div>
+      <div style={styles.card}><h2>💰 Fee Record</h2>{historyForStudentDetail.length===0?<div style={styles.emptyBox}>No fee history recorded.</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Month</th><th style={styles.th}>Fee</th><th style={styles.th}>Paid</th><th style={styles.th}>Pending</th><th style={styles.th}>Status</th></tr></thead><tbody>{historyForStudentDetail.map(f=><tr key={f.id}><td style={styles.td}>{f.monthId}</td><td style={styles.td}>₹{f.monthlyFee||0}</td><td style={styles.td}>₹{f.paidAmount||0}</td><td style={styles.td}>₹{f.pendingAmount||0}</td><td style={styles.td}><span style={getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="paid"?styles.paidBadge:getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="partial"?styles.partialBadge:styles.pendingBadge}>{getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="paid"?"🟢 Paid":getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="partial"?"🟠 Partial":"🔴 Due"}</span></td></tr>)}</tbody></table></div>}</div>
       <div style={styles.card}><h2>📚 Homework</h2>{studentHomework.length===0?<div style={styles.emptyBox}>No homework assigned.</div>:studentHomework.map(item=>{const done=Boolean(((item as any).completion||{})[student.studentId||""]);return <div key={item.id} style={styles.noticeCompact}><strong>{item.subject ? `${item.subject}: ` : ""}{item.title}</strong><span style={{marginLeft:10}}>{done ? "✅ Done" : "⚠ Pending"}</span><p style={{margin:"5px 0 0"}}>{item.description}</p></div>})}</div>
     </>;
   };
@@ -3001,12 +3156,12 @@ export default function App() {
     const totalCharged = history.reduce((sum, fee) => sum + Number(fee.monthlyFee || 0), 0);
     const totalPaid = history.reduce((sum, fee) => sum + Number(fee.paidAmount || 0), 0);
     const totalPending = history.reduce((sum, fee) => sum + Number(fee.pendingAmount || 0), 0);
-    const status = totalPending === 0 ? "paid" : totalPaid > 0 ? "partial" : "pending";
+    const status = getMonthlyFeeStatus(totalCharged, totalPending, totalPaid);
     const percent = totalCharged > 0 ? Math.min(100, Math.round((totalPaid / totalCharged) * 100)) : 100;
     return <>
       <div style={styles.pageHeader}><div><button style={styles.textButton} onClick={() => { setSelectedFeeStudent(null); setPage("fees"); }}>← Back to Fees</button><h1>💰 Fee Details</h1><p style={styles.muted}>{student.name} · {student.studentId} · {student.className}{student.batch ? ` · ${student.batch}` : ""}</p></div><span style={status === "paid" ? styles.paidBadge : status === "partial" ? styles.partialBadge : styles.pendingBadge}>{status === "paid" ? "🟢 PAID" : status === "partial" ? "🟠 PARTIAL" : "🔴 DUE"}</span></div>
       <div style={styles.card}><div style={styles.feeDetailHero}><div><span style={styles.smallLabel}>TOTAL FEE</span><h2 style={{margin:"3px 0"}}>₹{totalCharged.toLocaleString("en-IN")}</h2><p style={styles.muted}>Complete fee record for {student.name}</p></div><div style={styles.feeDetailMetrics}><div><span style={styles.smallLabel}>TOTAL PAID</span><strong style={{color:"#15803d"}}>₹{totalPaid.toLocaleString("en-IN")}</strong></div><div><span style={styles.smallLabel}>TOTAL PENDING</span><strong style={{color:totalPending===0?"#15803d":"#b91c1c"}}>₹{totalPending.toLocaleString("en-IN")}</strong></div><div><span style={styles.smallLabel}>COLLECTION</span><strong>{percent}%</strong></div></div><div style={{...styles.progressTrack,marginTop:14}}><div style={{...styles.progressFill,width:`${percent}%`}}/></div>{totalPending===0&&<div style={styles.paidNotice}>✅ All recorded dues are cleared. Overall status: <strong>PAID</strong>.</div>}</div></div>
-      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📅 Month-wise Fee Details</h2><p style={styles.muted}>Every recorded month, payment and remaining balance.</p></div>{isAdmin&&<button style={styles.primaryButtonSmall} onClick={()=>openAddFeeMonth(student)}>➕ Add Month</button>}</div>{history.length===0?<div style={styles.emptyBox}>No fee history available.</div>:history.map(f=><div key={f.id} style={styles.monthFeeCard}><div style={styles.sectionTitleRow}><strong>{f.monthId}</strong><span style={f.status==="paid"?styles.paidBadge:f.status==="partial"?styles.partialBadge:styles.pendingBadge}>{f.status==="paid"?"🟢 Paid":f.status==="partial"?"🟠 Partial":"🔴 Due"}</span></div><div style={styles.feeHistoryGrid}><div><span style={styles.smallLabel}>Fee</span><strong>₹{f.monthlyFee||0}</strong></div><div><span style={styles.smallLabel}>Paid</span><strong>₹{f.paidAmount||0}</strong></div><div><span style={styles.smallLabel}>Pending</span><strong>₹{f.pendingAmount||0}</strong></div><div><span style={styles.smallLabel}>Due Date</span><strong>{f.dueDate||"—"}</strong></div></div><div style={{marginTop:10}}><span style={styles.smallLabel}>Payment History</span>{(f.paymentHistory||[]).length===0?<span style={styles.muted}>No payments recorded.</span>:(f.paymentHistory||[]).map((p,i)=><div key={i} style={styles.paymentHistoryRow}><strong>₹{p.amount}</strong><span>{new Date(p.date).toLocaleString("en-IN")}</span><span>{p.method||"—"}</span><span>{p.note||""}</span></div>)}</div>{isAdmin&&<div style={styles.formActions}><button style={styles.editButton} onClick={()=>openEditHistoryFee(student,f)}>✏️ Edit Month</button></div>}</div>)}</div>
+      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📅 Month-wise Fee Details</h2><p style={styles.muted}>Every recorded month, payment and remaining balance.</p></div>{isAdmin&&<button style={styles.primaryButtonSmall} onClick={()=>openAddFeeMonth(student)}>➕ Add Month</button>}</div>{history.length===0?<div style={styles.emptyBox}>No fee history available.</div>:history.map(f=><div key={f.id} style={styles.monthFeeCard}><div style={styles.sectionTitleRow}><strong>{f.monthId}</strong><span style={getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="paid"?styles.paidBadge:getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="partial"?styles.partialBadge:styles.pendingBadge}>{getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="paid"?"🟢 Paid":getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="partial"?"🟠 Partial":"🔴 Due"}</span></div><div style={styles.feeHistoryGrid}><div><span style={styles.smallLabel}>Fee</span><strong>₹{f.monthlyFee||0}</strong></div><div><span style={styles.smallLabel}>Paid</span><strong>₹{f.paidAmount||0}</strong></div><div><span style={styles.smallLabel}>Pending</span><strong>₹{f.pendingAmount||0}</strong></div><div><span style={styles.smallLabel}>Due Date</span><strong>{f.dueDate||"—"}</strong></div></div><div style={{marginTop:10}}><span style={styles.smallLabel}>Payment History</span>{(f.paymentHistory||[]).length===0?<span style={styles.muted}>No payments recorded.</span>:(f.paymentHistory||[]).map((p,i)=><div key={i} style={styles.paymentHistoryRow}><strong>₹{p.amount}</strong><span>{new Date(p.date).toLocaleString("en-IN")}</span><span>{p.method||"—"}</span><span>{p.note||""}</span></div>)}</div>{isAdmin&&<div style={styles.formActions}><button style={styles.editButton} onClick={()=>openEditHistoryFee(student,f)}>✏️ Edit Month</button></div>}</div>)}</div>
     </>;
   };
 
@@ -3201,7 +3356,7 @@ export default function App() {
   ========================================================= */
 
   const feesPage = () => {
-    const currentMonth = new Date().toISOString().slice(0, 7);
+    const currentMonth = getBillingMonthId();
 
     const currentFees = students.map((student) => ({
       student,
@@ -3333,12 +3488,7 @@ export default function App() {
                   // Status is based on the student's TOTAL outstanding balance,
                   // not only the current month's balance. If every pending due
                   // is cleared, the student must always show Paid.
-                  const status =
-                    totalStudentPending === 0
-                      ? "paid"
-                      : paid > 0
-                      ? "partial"
-                      : "pending";
+                  const status = getMonthlyFeeStatus(monthly, totalStudentPending, paid);
 
                   return (
                     <tr key={student.studentId || student.id}>
@@ -3768,6 +3918,7 @@ export default function App() {
                       >
                         ✏️ Edit This Month
                       </button>
+                      <button style={styles.deleteButton} onClick={() => handleDeleteFeeMonth(selectedFeeStudent, fee)}>🗑️ Delete Month</button>
                     </div>
 
                     <div style={styles.feeHistoryGrid}>
@@ -3786,9 +3937,9 @@ export default function App() {
                       <div>
                         <span style={styles.smallLabel}>Status</span>
                         <strong>
-                          {fee.status === "paid"
+                          {getMonthlyFeeStatus(Number(fee.monthlyFee || 0), Number(fee.pendingAmount || 0), Number(fee.paidAmount || 0)) === "paid"
                             ? "🟢 Paid"
-                            : fee.status === "partial"
+                            : getMonthlyFeeStatus(Number(fee.monthlyFee || 0), Number(fee.pendingAmount || 0), Number(fee.paidAmount || 0)) === "partial"
                             ? "🟠 Partial"
                             : "🔴 Due"}
                         </strong>
@@ -3810,6 +3961,7 @@ export default function App() {
                             {new Date(payment.date).toLocaleDateString()}
                           </span>
                           {payment.note && <span>{payment.note}</span>}
+                          <button style={styles.deleteButton} onClick={() => handleDeleteFeePayment(selectedFeeStudent, fee, index)}>🗑️ Delete</button>
                         </div>
                       ))
                     )}
@@ -3860,6 +4012,42 @@ export default function App() {
     {isAdmin&&<div style={styles.card}><h2>➕ Publish Notice</h2><form onSubmit={saveNotice}><div style={styles.formGrid}><FormField label="Title *" value={noticeTitle} onChange={setNoticeTitle} placeholder="Holiday Notice"/><FormField label="Date" value={noticeDate} onChange={setNoticeDate} type="date"/><FormField label="Priority" value={noticePriority} onChange={v=>setNoticePriority(v as any)} type="select" options={[{label:"Normal",value:"normal"},{label:"Important",value:"important"},{label:"Urgent",value:"urgent"}]}/></div><label style={styles.label}>Message *</label><textarea style={{...styles.input,minHeight:120,resize:"vertical"}} value={noticeMessage} onChange={e=>setNoticeMessage(e.target.value)} placeholder="Write the announcement..." required/><div style={styles.formActions}><button type="submit" style={styles.primaryButtonSmall} disabled={noticeSaving}>{noticeSaving?"Publishing...":"📢 Publish Notice"}</button></div></form></div>}
     <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📌 Published Notices</h2><p style={styles.muted}>{notices.length} notice{notices.length===1?"":"s"}</p></div></div>{notices.length===0?<div style={styles.emptyBox}>No notices published yet.</div>:notices.map(n=><div key={n.id} style={styles.noticeItem}><div style={styles.homeworkMeta}><strong>{n.title}</strong><span>{n.date}</span></div><span style={styles.noticeBadge}>{(n.priority||"normal").toUpperCase()}</span><p style={{whiteSpace:"pre-wrap",margin:"10px 0 0"}}>{n.message}</p>{isAdmin&&<div style={styles.formActions}><button style={styles.deleteButton} onClick={()=>deleteNotice(n)}>🗑️ Delete</button></div>}</div>)}</div>
   </>;
+
+  const loginHistoryPage = () => {
+    const studentsWithHistory = students.filter((student) => student.studentId);
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const studentMap = new Map(studentsWithHistory.map((student) => [student.authUid || student.studentId, student]));
+    const counts = new Map<string, number>();
+    const lastLogin = new Map<string, string>();
+    const todayUsers = new Set<string>();
+    loginHistory.forEach((entry) => {
+      const key = entry.uid || entry.studentId;
+      if (!key) return;
+      counts.set(key, (counts.get(key) || 0) + 1);
+      if (!lastLogin.has(key) || String(entry.loginAt || "") > String(lastLogin.get(key) || "")) lastLogin.set(key, entry.loginAt);
+      if (String(entry.loginAt || "").slice(0, 10) === todayKey) todayUsers.add(key);
+    });
+    const activeSessions = userSessions.filter((session) => session.active && session.lastSeenAt && Date.now() - new Date(session.lastSeenAt).getTime() <= 5 * 60 * 1000);
+    const rows = studentsWithHistory.map((student) => {
+      const key = student.authUid || student.studentId!;
+      const session = userSessions.find((item) => item.uid === student.authUid);
+      return { student, count: counts.get(key) || 0, last: lastLogin.get(key), today: todayUsers.has(key), active: Boolean(session && session.active && session.lastSeenAt && Date.now() - new Date(session.lastSeenAt).getTime() <= 5 * 60 * 1000) };
+    });
+    return <>
+      <div style={styles.pageHeader}><div><h1>🔐 Login History</h1><p style={styles.muted}>Monitor successful student logins and remotely log out a student from all active devices.</p></div><button style={styles.secondaryButton} onClick={loadLoginHistory}>🔄 Refresh</button></div>
+      {loginHistoryMessage && <div style={loginHistoryMessage.includes("success") || loginHistoryMessage.includes("logged out") ? styles.successBox : styles.errorBox}>{loginHistoryMessage}</div>}
+      <div style={styles.grid}>
+        <StatCard title="Students Logged In" value={String(new Set(loginHistory.filter((x:any)=>["student","cr"].includes(String(x.role || "").toLowerCase())).map((x:any)=>x.uid)).size)} icon="👨‍🎓" />
+        <StatCard title="Logged In Today" value={String(todayUsers.size)} icon="📅" />
+        <StatCard title="Total Login Events" value={String(loginHistory.length)} icon="🔢" />
+        <StatCard title="Active Sessions" value={String(activeSessions.length)} icon="🟢" />
+      </div>
+      <div style={styles.card}>
+        <h2>Student Login Activity</h2>
+        {loginHistoryLoading ? <div style={styles.emptyBox}>Loading login history...</div> : <div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Last Login</th><th style={styles.th}>Login Count</th><th style={styles.th}>Today</th><th style={styles.th}>Status</th><th style={styles.th}>Action</th></tr></thead><tbody>{rows.map(({student,count,last,today,active})=><tr key={student.studentId}><td style={styles.td}><strong>{student.name || "-"}</strong><div style={styles.muted}>{student.studentId}</div></td><td style={styles.td}>{student.className || "-"}</td><td style={styles.td}>{last ? new Date(last).toLocaleString("en-IN") : "Never recorded"}</td><td style={styles.td}><strong>{count}</strong></td><td style={styles.td}>{today ? "✅ Yes" : "—"}</td><td style={styles.td}>{active ? <span style={styles.liveBadge}>🟢 ACTIVE</span> : <span style={styles.muted}>Offline</span>}</td><td style={styles.td}><button style={styles.deleteButton} disabled={!active || remoteLogoutLoading === student.authUid} onClick={()=>remoteLogoutStudent(student)}>{remoteLogoutLoading === student.authUid ? "Logging out..." : "🚪 Log Out All Devices"}</button></td></tr>)}</tbody></table></div>}
+      </div>
+    </>;
+  };
 
   /* =========================================================
      SIMPLE PAGES
@@ -3981,6 +4169,8 @@ export default function App() {
             ⭐ Class Representative
           </button>
 
+          {isAdmin && <button style={page === "loginHistory" ? styles.navButtonActive : styles.navButton} onClick={() => setPage("loginHistory")}>🔐 Login History</button>}
+
           <button
             style={
               page === "notices" ? styles.navButtonActive : styles.navButton
@@ -4034,6 +4224,8 @@ export default function App() {
           {page === "homework" && (isAdmin || isCR) && homeworkPage()}
 
           {page === "cr" && (isAdmin ? crAdminPage() : crPublicPage())}
+
+          {page === "loginHistory" && isAdmin && loginHistoryPage()}
 
           {page === "notices" && noticesPage()}
         </main>
