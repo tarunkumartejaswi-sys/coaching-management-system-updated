@@ -41,6 +41,7 @@ import db, {
 
 import { getUserProfile } from "../firebase/user";
 import { getCrEligibility, isHomeworkPending } from "./crLogic.js";
+import { buildMonthlyStudentReport, getTestPercentages } from "./studentReportLogic.js";
 import { getBillingMonthId, getMonthlyFeeStatus } from "./feeLogic.js";
 import { buildLoginHistoryEntry } from "./sessionLogic.js";
 import "./premium.css";
@@ -152,6 +153,11 @@ type Director = {
   address?: string;
   message?: string;
   photoUrl?: string;
+  qualification?: string;
+  experience?: string;
+  officeHours?: string;
+  vision?: string;
+  instituteMessage?: string;
 };
 
 type Notice = {
@@ -198,7 +204,7 @@ export default function App() {
   const [profileDraft, setProfileDraft] = useState<Student>({});
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState("");
-  const [directorForm, setDirectorForm] = useState<Director>({ name: "", title: "Director", mobile: "", email: "", address: "", message: "" });
+  const [directorForm, setDirectorForm] = useState<Director>({ name: "", title: "Director", mobile: "", email: "", address: "", message: "", qualification: "", experience: "", officeHours: "", vision: "", instituteMessage: "" });
   const [directorSaving, setDirectorSaving] = useState(false);
   const [directorMessage, setDirectorMessage] = useState("");
 
@@ -238,6 +244,22 @@ export default function App() {
   });
   const [crCriteriaMessage, setCrCriteriaMessage] = useState("");
   const [savingCrCriteria, setSavingCrCriteria] = useState(false);
+
+  const getMonthlyStudentReport = (student: Student | null, monthId: string) => {
+    if (!student?.studentId) return null;
+    const sid = student.studentId;
+    const attendance = attendanceDays
+      .filter(d => String(d.date || "").startsWith(monthId))
+      .map(d => ({ date: d.date, status: getStudentAttendanceStatus(d, sid, student.authUid) }))
+      .filter(x => x.status);
+    const monthTests = tests.filter(t => String(t.date || "").startsWith(monthId));
+    const testRows = monthTests.map(t => { const r=(t.results||{})[sid]; return { date:t.date, name:t.name, marks:r?.present ? r.marks : null, total:t.total }; }).filter(x => x.marks !== null && x.marks !== undefined);
+    const hw = homeworkForStudent(student).filter(h => String(h.dueDate || h.homeworkDate || "").startsWith(monthId)).map(h => ({ dueDate:h.dueDate || h.homeworkDate, completed:Boolean(((h as any).completion || {})[sid]) }));
+    const fee = studentFeeHistory.find(f => f.monthId === monthId) || { monthlyFee:0, paidAmount:0, pendingAmount:0 };
+    return buildMonthlyStudentReport({ monthId, attendance, tests:testRows, homework:hw, fee });
+  };
+
+  const getStudentTestGraph = (student: Student | null) => student?.studentId ? getTestPercentages(tests, student.studentId) : [];
 
   /* =========================================================
      LOGIN
@@ -304,6 +326,7 @@ export default function App() {
   const [savingTest, setSavingTest] = useState(false);
   const [expandedTestId, setExpandedTestId] = useState<string | null>(null);
   const [studentSearch, setStudentSearch] = useState("");
+  const [adminGraphStudentId, setAdminGraphStudentId] = useState("");
 
   /* =========================================================
      ATTENDANCE
@@ -313,6 +336,7 @@ export default function App() {
   const [attendanceRecords, setAttendanceRecords] = useState<Record<string, "present" | "absent">>({});
   const [attendanceMessage, setAttendanceMessage] = useState("");
   const [studentCalendarMonth, setStudentCalendarMonth] = useState(new Date().toISOString().slice(0, 7));
+  const [studentReportMonth, setStudentReportMonth] = useState(new Date().toISOString().slice(0, 7));
   const [attendanceLoading, setAttendanceLoading] = useState(false);
 
   /* =========================================================
@@ -1015,6 +1039,22 @@ export default function App() {
       if (activeSessionCleanup) activeSessionCleanup();
     };
   }, []);
+
+  const getMonthlyStudentReport = (student: Student | null, monthId: string) => {
+    if (!student?.studentId) return null;
+    const sid = student.studentId;
+    const attendance = attendanceDays
+      .filter(d => String(d.date || "").startsWith(monthId))
+      .map(d => ({ date: d.date, status: getStudentAttendanceStatus(d, sid, student.authUid) }))
+      .filter(x => x.status);
+    const monthTests = tests.filter(t => String(t.date || "").startsWith(monthId));
+    const testRows = monthTests.map(t => { const r=(t.results||{})[sid]; return { date:t.date, name:t.name, marks:r?.present ? r.marks : null, total:t.total }; }).filter(x => x.marks !== null && x.marks !== undefined);
+    const hw = homeworkForStudent(student).filter(h => String(h.dueDate || h.homeworkDate || "").startsWith(monthId)).map(h => ({ dueDate:h.dueDate || h.homeworkDate, completed:Boolean(((h as any).completion || {})[sid]) }));
+    const fee = studentFeeHistory.find(f => f.monthId === monthId) || { monthlyFee:0, paidAmount:0, pendingAmount:0 };
+    return buildMonthlyStudentReport({ monthId, attendance, tests:testRows, homework:hw, fee });
+  };
+
+  const getStudentTestGraph = (student: Student | null) => student?.studentId ? getTestPercentages(tests, student.studentId) : [];
 
   /* =========================================================
      LOGIN
@@ -2144,6 +2184,22 @@ export default function App() {
     );
   }
 
+  const getMonthlyStudentReport = (student: Student | null, monthId: string) => {
+    if (!student?.studentId) return null;
+    const sid = student.studentId;
+    const attendance = attendanceDays
+      .filter(d => String(d.date || "").startsWith(monthId))
+      .map(d => ({ date: d.date, status: getStudentAttendanceStatus(d, sid, student.authUid) }))
+      .filter(x => x.status);
+    const monthTests = tests.filter(t => String(t.date || "").startsWith(monthId));
+    const testRows = monthTests.map(t => { const r=(t.results||{})[sid]; return { date:t.date, name:t.name, marks:r?.present ? r.marks : null, total:t.total }; }).filter(x => x.marks !== null && x.marks !== undefined);
+    const hw = homeworkForStudent(student).filter(h => String(h.dueDate || h.homeworkDate || "").startsWith(monthId)).map(h => ({ dueDate:h.dueDate || h.homeworkDate, completed:Boolean(((h as any).completion || {})[sid]) }));
+    const fee = studentFeeHistory.find(f => f.monthId === monthId) || { monthlyFee:0, paidAmount:0, pendingAmount:0 };
+    return buildMonthlyStudentReport({ monthId, attendance, tests:testRows, homework:hw, fee });
+  };
+
+  const getStudentTestGraph = (student: Student | null) => student?.studentId ? getTestPercentages(tests, student.studentId) : [];
+
   /* =========================================================
      LOGIN
   ========================================================= */
@@ -2267,7 +2323,8 @@ export default function App() {
       fees: "Fees",
       notices: "Notices",
       director: "Director",
-      cr: "Class Representative",
+      cr: isCR ? "CR Control Center" : "Class Representative",
+      monthlyReport: "Monthly Report",
     };
 
     return (
@@ -2294,23 +2351,16 @@ export default function App() {
         <div style={styles.studentShell}>
           <aside style={styles.studentSidebar}>
             <div style={styles.studentNavLabel}>{isCR ? "CLASS REPRESENTATIVE PORTAL" : "STUDENT PORTAL"}</div>
-            {(isCR ? [
-              ["dashboard", "🏠", "Dashboard"],
-              ["profile", "👤", "My Profile"],
-              ["attendance", "📅", "Attendance"],
-              ["homework", "📚", "Homework"],
-              ["cr", "⭐", "Class Representative"],
-            ] : [
-              ["dashboard", "🏠", "Dashboard"],
+            [["dashboard", "🏠", "Dashboard"],
               ["profile", "👤", "My Profile"],
               ["attendance", "📅", "Attendance"],
               ["results", "📝", "Tests & Results"],
               ["homework", "📚", "Homework"],
               ["fees", "💰", "Fees"],
+              ["monthlyReport", "📋", "Monthly Report"],
               ["notices", "📢", "Notices"],
               ["director", "🎓", "Director"],
-              ["cr", "⭐", "Class Representative"],
-            ]).map(([key, icon, label]) => (
+              ["cr", "⭐", isCR ? "CR Control Center" : "Class Representative"]].map(([key, icon, label]) => (
               <button key={key} style={studentPage === key ? styles.studentNavActive : styles.studentNav}
                 onClick={() => goStudent(key)}>
                 <span>{icon}</span><span>{label}</span>
@@ -2356,6 +2406,7 @@ export default function App() {
                   <StatCard title="Monthly Fee" value={`₹${studentFee?.monthlyFee ?? studentData?.monthlyFee ?? 0}`} icon="💰" />
                   <StatCard title="Fee Due" value={`₹${studentFee?.pendingAmount ?? 0}`} icon="🔴" />
                 </div>
+                <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📈 Test Performance</h2><p style={styles.muted}>Your percentage in each test.</p></div></div><TestPerformanceChart points={getStudentTestGraph(studentData)} /></div>
                 <div style={styles.twoColumn}>
                   <div style={styles.card}>
                     <div style={styles.sectionTitleRow}><div><h2 style={{margin:0}}>📌 Quick Summary</h2><p style={styles.muted}>Your most important updates.</p></div></div>
@@ -2427,6 +2478,8 @@ export default function App() {
                 )}
               </>
             )}
+
+            {studentPage === "profile" && <div style={styles.card}><h2>📇 Student Information</h2><div style={styles.twoColumn}><div>{[["Student ID",studentData?.studentId],["Class",studentData?.className],["Batch",studentData?.batch],["Email",studentData?.email],["Father's Name",studentData?.fatherName],["Mother's Name",studentData?.motherName]].map(([l,v])=><div key={l} style={styles.infoRow}><span style={styles.infoLabel}>{l}</span><strong>{v || "Not provided"}</strong></div>)}</div><div>{[["Mobile",studentData?.mobile],["Date of Birth",studentData?.dob],["Gender",studentData?.gender],["Address",studentData?.address],["CR Status",studentData?.isCR ? "Class Representative" : "Student"]].map(([l,v])=><div key={l} style={styles.infoRow}><span style={styles.infoLabel}>{l}</span><strong>{v || "Not provided"}</strong></div>)}</div></div></div>}
 
             {studentPage === "attendance" && (
               isCR ? (
@@ -2598,6 +2651,20 @@ export default function App() {
               )
             )}
 
+            {studentPage === "monthlyReport" && (() => {
+              const report = getMonthlyStudentReport(studentData, studentReportMonth);
+              return <div>
+                <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📋 Monthly Report</h2><p style={styles.muted}>Attendance, tests, homework and fees for one month.</p></div><input style={styles.monthInput} type="month" value={studentReportMonth} onChange={e=>setStudentReportMonth(e.target.value)} /></div></div>
+                {!report ? <div style={styles.emptyBox}>No report available.</div> : <>
+                  <div style={styles.grid}><StatCard title="Attendance" value={`${report.attendance.percentage}%`} icon="📅"/><StatCard title="Test Average" value={`${report.tests.averagePercentage}%`} icon="📊"/><StatCard title="Homework Pending" value={String(report.homework.pending)} icon="📚"/><StatCard title="Fee Remaining" value={`₹${report.fees.remaining.toLocaleString("en-IN")}`} icon="💰"/></div>
+                  <div style={styles.card}><h2>📅 Attendance</h2><div style={styles.feeHistoryGrid}><div><span style={styles.smallLabel}>Present</span><strong>{report.attendance.present}</strong></div><div><span style={styles.smallLabel}>Absent</span><strong>{report.attendance.absent}</strong></div><div><span style={styles.smallLabel}>Recorded</span><strong>{report.attendance.total}</strong></div><div><span style={styles.smallLabel}>Percentage</span><strong>{report.attendance.percentage}%</strong></div></div></div>
+                  <div style={styles.card}><h2>📝 Tests</h2><TestPerformanceChart points={getStudentTestGraph(studentData).filter(p=>String(p.date||"").startsWith(studentReportMonth))} /></div>
+                  <div style={styles.card}><h2>📚 Homework</h2><div style={styles.feeHistoryGrid}><div><span style={styles.smallLabel}>Assigned</span><strong>{report.homework.total}</strong></div><div><span style={styles.smallLabel}>Completed</span><strong>{report.homework.completed}</strong></div><div><span style={styles.smallLabel}>Pending</span><strong>{report.homework.pending}</strong></div></div></div>
+                  <div style={styles.card}><h2>💰 Fee</h2><div style={styles.feeHistoryGrid}><div><span style={styles.smallLabel}>Fee Dues</span><strong>₹{report.fees.due.toLocaleString("en-IN")}</strong></div><div><span style={styles.smallLabel}>Fee Paid</span><strong>₹{report.fees.paid.toLocaleString("en-IN")}</strong></div><div><span style={styles.smallLabel}>Remaining</span><strong>₹{report.fees.remaining.toLocaleString("en-IN")}</strong></div></div></div>
+                </>}
+              </div>;
+            })()}
+
             {studentPage === "fees" && (
               <div style={styles.card}>
                 <div style={styles.sectionTitleRow}><div><h2>💰 Fee Centre</h2><p style={styles.muted}>Month-by-month fee status and payment history.</p></div><div style={styles.rankBadge}>{studentFee?.status==="paid"?"PAID":`₹${studentFee?.pendingAmount??0} DUE`}</div></div>
@@ -2645,7 +2712,7 @@ export default function App() {
             {studentPage === "director" && (
               <div style={styles.card}>
                 <div style={styles.sectionTitleRow}><div><h2>🎓 Coaching Director</h2><p style={styles.muted}>Official director information.</p></div></div>
-                {director?<div style={styles.directorCard}><div style={styles.avatarDirector}>{director.photoUrl?<img src={director.photoUrl} alt="Director" style={styles.avatarImage}/>: "🎓"}</div><div><h2 style={{margin:"0 0 4px"}}>{director.name||"Director"}</h2><p style={styles.muted}>{director.title||"Director"}</p>{director.mobile&&<div>📞 {director.mobile}</div>}{director.email&&<div>✉️ {director.email}</div>}{director.address&&<div>📍 {director.address}</div>}{director.message&&<div style={styles.infoNotice}>💬 {director.message}</div>}</div></div>:<div style={styles.emptyBox}>Director details have not been published yet.</div>}
+                {director?<div style={styles.directorCard}><div style={styles.avatarDirector}>{director.photoUrl?<img src={director.photoUrl} alt="Director" style={styles.avatarImage}/>: "🎓"}</div><div><h2 style={{margin:"0 0 4px"}}>{director.name||"Director"}</h2><p style={styles.muted}>{director.title||"Director"}</p>{director.mobile&&<div>📞 {director.mobile}</div>}{director.email&&<div>✉️ {director.email}</div>}{director.address&&<div>📍 {director.address}</div>}{director.qualification&&<div>🎓 Qualification: {director.qualification}</div>}{director.experience&&<div>💼 Experience: {director.experience}</div>}{director.officeHours&&<div>🕒 Office Hours: {director.officeHours}</div>}{director.vision&&<div style={styles.infoNotice}>🎯 Vision: {director.vision}</div>}{director.instituteMessage&&<div style={styles.infoNotice}>🏫 {director.instituteMessage}</div>}{director.message&&<div style={styles.infoNotice}>💬 {director.message}</div>}</div></div>:<div style={styles.emptyBox}>Director details have not been published yet.</div>}
               </div>
             )}
           </main>
@@ -2732,6 +2799,8 @@ export default function App() {
           </div>
         </div>
 
+        {isAdmin && <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📈 Test Performance</h2><p style={styles.muted}>Track test percentages for any student and compare the class trend.</p></div><select style={styles.filterInput} value={adminGraphStudentId || students[0]?.studentId || ""} onChange={e=>setAdminGraphStudentId(e.target.value)}><option value="">Select student</option>{students.map(s=><option key={s.studentId} value={s.studentId}>{s.name} · {s.className}</option>)}</select></div><div style={styles.twoColumn}><div><h3 style={{marginTop:0}}>Student Trend</h3><TestPerformanceChart points={getStudentTestGraph(students.find(s=>s.studentId === (adminGraphStudentId || students[0]?.studentId)) || null)} /></div><div><h3 style={{marginTop:0}}>Class/Institute Average by Test</h3><TestPerformanceChart points={tests.map(t=>{const vals=Object.values(t.results||{}).filter((r:any)=>r?.present&&r.marks!=null).map((r:any)=>(Number(r.marks)/Number(t.total||1))*100);return {name:t.name||t.subject||"Test",date:t.date||"",percentage:vals.length?Number((vals.reduce((a:number,b:number)=>a+b,0)/vals.length).toFixed(1)):0};}).filter(p=>p.percentage>0).slice(0,12).reverse()} /></div></div></div>}
+
         {isAdmin && <div style={styles.card}>
           <div style={styles.sectionTitleRow}><div><h2 style={{margin:"0 0 4px"}}>🎓 Director Profile</h2><p style={styles.muted}>Visible to every student. Only admin can edit it.</p></div></div>
           <form onSubmit={saveDirector}>
@@ -2744,9 +2813,14 @@ export default function App() {
                   <FormField label="Mobile" value={directorForm.mobile || ""} onChange={v=>setDirectorForm(d=>({...d,mobile:v}))} required={false}/>
                   <FormField label="Email" value={directorForm.email || ""} onChange={v=>setDirectorForm(d=>({...d,email:v}))} required={false}/>
                   <FormField label="Address" value={directorForm.address || ""} onChange={v=>setDirectorForm(d=>({...d,address:v}))} required={false}/>
+                  <FormField label="Qualification" value={directorForm.qualification || ""} onChange={v=>setDirectorForm(d=>({...d,qualification:v}))} required={false}/>
+                  <FormField label="Experience" value={directorForm.experience || ""} onChange={v=>setDirectorForm(d=>({...d,experience:v}))} required={false}/>
+                  <FormField label="Office Hours" value={directorForm.officeHours || ""} onChange={v=>setDirectorForm(d=>({...d,officeHours:v}))} required={false}/>
+                  <FormField label="Vision" value={directorForm.vision || ""} onChange={v=>setDirectorForm(d=>({...d,vision:v}))} required={false}/>
                 </div>
               </div>
             </div>
+            <label style={styles.label}>Institute Message</label><textarea style={{...styles.input,minHeight:60}} value={directorForm.instituteMessage || ""} onChange={e=>setDirectorForm(d=>({...d,instituteMessage:e.target.value}))} placeholder="Institute information or message..."/>
             <label style={styles.label}>Director Message</label><textarea style={{...styles.input,minHeight:70}} value={directorForm.message || ""} onChange={e=>setDirectorForm(d=>({...d,message:e.target.value}))} placeholder="Welcome message for students..."/>
             {directorMessage && <div style={directorMessage.includes("successfully")?styles.successBox:styles.errorBox}>{directorMessage}</div>}
             <div style={styles.formActions}><button style={styles.primaryButtonSmall} disabled={directorSaving}>{directorSaving?"Saving...":"💾 Save Director Profile"}</button></div>
@@ -3203,6 +3277,7 @@ export default function App() {
 
   const crPublicPage = () => {
     const classCrs = directoryStudents.filter((s: any) => s.isCR);
+    const crAverage = studentData?.studentId ? Number(studentAverageMap()[studentData.studentId] || studentData.average || 0) : 0;
     const myClass = studentData?.className || profile?.studentId;
     const myClassCrs = myClass ? classCrs.filter((s: any) => s.className === myClass) : classCrs;
     const visibleCrs = isAdmin ? classCrs : (myClassCrs.length ? myClassCrs : classCrs);
@@ -3224,7 +3299,7 @@ export default function App() {
             <div><strong style={{fontSize:17}}>{cr.name || cr.studentId}</strong><div style={styles.muted}>{cr.className || "Class"}{cr.batch ? ` · ${cr.batch}` : ""}</div>{cr.crSince && <small style={styles.muted}>CR since {new Date(cr.crSince).toLocaleDateString("en-IN")}</small>}</div>
           </div>)}</div>}
       </div>
-      {isCR && <div style={styles.card}><h2>🛡️ CR Permissions</h2><div style={styles.quickGrid}>
+      {isCR && <><div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>🛡️ CR Control Center</h2><p style={styles.muted}>Manage only your assigned class. Official changes require Admin approval.</p></div></div><div style={styles.grid}><StatCard title="Class Students" value={String(students.filter(s=>s.className===studentData?.className).length)} icon="👨‍🎓"/><StatCard title="Class Attendance" value={`${Math.round((students.filter(s=>s.className===studentData?.className).reduce((a,s)=>a+Number(s.attendance||0),0)/Math.max(1,students.filter(s=>s.className===studentData?.className).length)))}%`} icon="📅"/><StatCard title="Class Homework" value={String(homework.filter(h=>h.className===studentData?.className).length)} icon="📚"/><StatCard title="My Average" value={`${crAverage.toFixed(1)}%`} icon="📊"/></div><TestPerformanceChart points={getStudentTestGraph(studentData)} /><h3 style={{marginBottom:6}}>📊 Class Test Average</h3><TestPerformanceChart points={tests.filter(t=>!studentData?.className || t.className===studentData.className).map(t=>{const vals=Object.entries(t.results||{}).filter(([sid,r]:any)=>r?.present&&r.marks!=null && students.some(s=>s.studentId===sid && s.className===studentData?.className)).map(([sid,r]:any)=>(Number(r.marks)/Number(t.total||1))*100);return {name:t.name||t.subject||"Test",date:t.date||"",percentage:vals.length?Number((vals.reduce((a:number,b:number)=>a+b,0)/vals.length).toFixed(1)):0};}).filter(p=>p.percentage>0).slice(0,12).reverse()} /></div><div style={styles.card}><h2>🛡️ CR Permissions</h2><div style={styles.quickGrid}>
         <button style={styles.quickAction} onClick={() => setPage("attendance")}><span style={{fontSize:24}}>📅</span><span><strong>Attendance</strong><small style={styles.muted}>Manage your assigned class</small></span></button>
         <button style={styles.quickAction} onClick={() => setPage("homework")}><span style={{fontSize:24}}>📚</span><span><strong>Homework</strong><small style={styles.muted}>Add and manage class homework</small></span></button>
       </div><div style={styles.infoNotice}>CR changes to official Attendance/Homework records are sent to Admin for approval. You cannot edit fees, marks, teachers or student accounts.</div></div>}
@@ -3968,7 +4043,7 @@ export default function App() {
                             {new Date(payment.date).toLocaleDateString()}
                           </span>
                           {payment.note && <span>{payment.note}</span>}
-                          <button style={styles.deleteButton} onClick={() => openDeleteFeePayment(selectedFeeStudent, fee, index)}>🗑️ Delete</button>
+                          <button style={styles.deleteButton} onClick={() => openDeleteFeePayment(selectedFeeStudent, fee, index)}>🗑️ Delete Payment</button>
                         </div>
                       ))
                     )}
@@ -4245,6 +4320,12 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+function TestPerformanceChart({ points = [] }: { points: Array<{name?:string;date?:string;percentage:number}> }) {
+  const data = points.slice(-12);
+  if (!data.length) return <div style={styles.emptyBox}>No test percentages available yet.</div>;
+  return <div className="testChart" aria-label="Test percentage graph">{data.map((p,i)=><div className="testChartItem" key={`${p.name}-${p.date}-${i}`}><div className="testChartBarWrap"><div className="testChartBar" style={{height:`${Math.max(4,Math.min(100,p.percentage))}%`}}><span>{p.percentage.toFixed(1)}%</span></div></div><small title={p.name}>{p.name || `T${i+1}`}</small></div>)}</div>;
 }
 
 /* =========================================================
