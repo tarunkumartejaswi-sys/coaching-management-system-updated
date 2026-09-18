@@ -1,8 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { onAuthStateChanged } from "firebase/auth";
 import { doc, setDoc, updateDoc, getDocs, collection, query, orderBy, deleteDoc } from "firebase/firestore";
-import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
-import { FIREBASE_STORAGE_BUCKET } from "../firebase/config";
 
 import auth, {
   loginUser,
@@ -175,11 +173,9 @@ export default function App() {
   const [director, setDirector] = useState<Director | null>(null);
   const [showStudentProfile, setShowStudentProfile] = useState(false);
   const [profileDraft, setProfileDraft] = useState<Student>({});
-  const [profilePhotoFile, setProfilePhotoFile] = useState<File | null>(null);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState("");
   const [directorForm, setDirectorForm] = useState<Director>({ name: "", title: "Director", mobile: "", email: "", address: "", message: "" });
-  const [directorPhotoFile, setDirectorPhotoFile] = useState<File | null>(null);
   const [directorSaving, setDirectorSaving] = useState(false);
   const [directorMessage, setDirectorMessage] = useState("");
 
@@ -255,8 +251,6 @@ export default function App() {
   const [testDate, setTestDate] = useState("");
   const [testTotal, setTestTotal] = useState("100");
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
-  const [testQuestionFile, setTestQuestionFile] = useState<File | null>(null);
-  const [testAnswerFile, setTestAnswerFile] = useState<File | null>(null);
   const [savingTest, setSavingTest] = useState(false);
   const [expandedTestId, setExpandedTestId] = useState<string | null>(null);
   const [studentSearch, setStudentSearch] = useState("");
@@ -623,10 +617,7 @@ export default function App() {
     setProfileSaving(true);
     setProfileMessage("");
     try {
-      let photoUrl = profileDraft.photoUrl || "";
-      if (profilePhotoFile) {
-        photoUrl = await uploadAcademicFile(profilePhotoFile, `students/${studentData.studentId}/profile`);
-      }
+      const photoUrl = profileDraft.photoUrl || "";
       const allowed = {
         name: (profileDraft.name || "").trim(),
         fatherName: (profileDraft.fatherName || "").trim(),
@@ -648,7 +639,6 @@ export default function App() {
       const updated = await getStudentById(studentData.studentId);
       setStudentData(updated);
       setProfileMessage("Profile updated successfully! ✅");
-      setProfilePhotoFile(null);
     } catch (error: any) {
       setProfileMessage(`Unable to update profile: ${error?.message || "Unknown error"}`);
     } finally {
@@ -662,8 +652,7 @@ export default function App() {
     setDirectorSaving(true);
     setDirectorMessage("");
     try {
-      let photoUrl = directorForm.photoUrl || "";
-      if (directorPhotoFile) photoUrl = await uploadAcademicFile(directorPhotoFile, "director/profile");
+      const photoUrl = directorForm.photoUrl || "";
       const payload = {
         ...directorForm,
         name: (directorForm.name || "").trim(),
@@ -678,7 +667,6 @@ export default function App() {
       await setDoc(doc(db, "director", "profile"), payload, { merge: true });
       setDirector(payload);
       setDirectorForm(payload);
-      setDirectorPhotoFile(null);
       setDirectorMessage("Director details saved successfully! ✅");
     } catch (error: any) {
       setDirectorMessage(`Unable to save director details: ${error?.message || "Unknown error"}`);
@@ -1289,25 +1277,6 @@ export default function App() {
     setTestQuestionFile(null); setTestAnswerFile(null); setShowTestForm(true);
   };
 
-  const uploadAcademicFile = async (file: File, folder: string) => {
-    if (!file) throw new Error("Please choose a file.");
-    const allowedImages = file.type.startsWith("image/");
-    const maxBytes = allowedImages ? 5 * 1024 * 1024 : 15 * 1024 * 1024;
-    if (file.size > maxBytes) {
-      throw new Error(`File is too large. Maximum size is ${allowedImages ? "5 MB" : "15 MB"}.`);
-    }
-    const storage = getStorage(undefined, FIREBASE_STORAGE_BUCKET);
-    const safeName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-    const fileRef = storageRef(storage, `${folder}/${safeName}`);
-    if (!user?.uid) throw new Error("You must be signed in before uploading a file.");
-    await uploadBytes(fileRef, file, {
-      contentType: file.type || "application/octet-stream",
-      customMetadata: { uploadedBy: user.uid },
-    });
-    const url = await getDownloadURL(fileRef);
-    if (!url) throw new Error("Upload completed but no download URL was returned.");
-    return url;
-  };
 
   const saveTest = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1317,12 +1286,10 @@ export default function App() {
     if (!Number.isFinite(total) || total <= 0) { setTestMessage("Total marks must be greater than 0."); return; }
     setSavingTest(true); setTestMessage("");
     try {
-      let questionPaperUrl = editingTest?.questionPaperUrl || "";
-      let questionPaperName = editingTest?.questionPaperName || "";
-      let answerSheetUrl = editingTest?.answerSheetUrl || "";
-      let answerSheetName = editingTest?.answerSheetName || "";
-      if (testQuestionFile) { questionPaperUrl = await uploadAcademicFile(testQuestionFile, "tests/question-papers"); questionPaperName = testQuestionFile.name; }
-      if (testAnswerFile) { answerSheetUrl = await uploadAcademicFile(testAnswerFile, "tests/answer-sheets"); answerSheetName = testAnswerFile.name; }
+      const questionPaperUrl = editingTest?.questionPaperUrl || "";
+      const questionPaperName = editingTest?.questionPaperName || "";
+      const answerSheetUrl = editingTest?.answerSheetUrl || "";
+      const answerSheetName = editingTest?.answerSheetName || "";
       const payload = { name: testName.trim(), subject: testSubject.trim(), className: testClass.trim(), batch: testBatch.trim(), date: testDate, total, results: testResults, questionPaperUrl, questionPaperName, answerSheetUrl, answerSheetName, updatedAt: new Date().toISOString() };
       if (editingTest?.id) await updateDoc(doc(db, "tests", editingTest.id), payload);
       else await setDoc(doc(collection(db, "tests")), { ...payload, createdAt: new Date().toISOString() });
@@ -1954,7 +1921,6 @@ export default function App() {
                         <FormField label="Gender" value={profileDraft.gender || ""} onChange={v=>setProfileDraft(p=>({...p,gender:v}))} type="select" required={false} options={[{label:"Select",value:""},{label:"Male",value:"Male"},{label:"Female",value:"Female"},{label:"Other",value:"Other"}]}/>
                       </div>
                       <label style={styles.label}>Address</label><textarea style={{...styles.input,minHeight:90}} value={profileDraft.address || ""} onChange={e=>setProfileDraft(p=>({...p,address:e.target.value}))} />
-                      <label style={styles.uploadBox}>📷 Profile Picture <input type="file" accept="image/jpeg,image/png,image/webp" onChange={e=>setProfilePhotoFile(e.target.files?.[0] || null)} /><small>{profilePhotoFile?.name || "JPG, PNG or WEBP · max 5 MB"}</small></label>
                       {profileMessage && <div style={profileMessage.includes("successfully") ? styles.successBox : styles.errorBox}>{profileMessage}</div>}
                       <div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={()=>setShowStudentProfile(false)}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={profileSaving}>{profileSaving?"Uploading & saving...":"💾 Save / Submit Profile"}</button></div>
                     </form>
@@ -2142,7 +2108,6 @@ export default function App() {
                 </div>
               </div>
             </div>
-            <label style={styles.uploadBox}>📷 Director Profile Picture<input type="file" accept="image/*" onChange={e=>setDirectorPhotoFile(e.target.files?.[0] || null)}/><small>{directorPhotoFile?.name || "Choose photo"}</small></label>
             <label style={styles.label}>Director Message</label><textarea style={{...styles.input,minHeight:70}} value={directorForm.message || ""} onChange={e=>setDirectorForm(d=>({...d,message:e.target.value}))} placeholder="Welcome message for students..."/>
             {directorMessage && <div style={directorMessage.includes("successfully")?styles.successBox:styles.errorBox}>{directorMessage}</div>}
             <div style={styles.formActions}><button style={styles.primaryButtonSmall} disabled={directorSaving}>{directorSaving?"Saving...":"💾 Save Director Profile"}</button></div>
@@ -3254,7 +3219,6 @@ export default function App() {
       {testMessage && <div style={testMessage.includes("successfully") ? styles.successBox : styles.errorBox}>{testMessage}</div>}
       {showTestForm && <div style={styles.card}><div style={styles.formHeader}><div><h2>{editingTest ? "✏️ Edit Test" : "➕ New Test"}</h2><p style={styles.muted}>Marks and percentages update automatically.</p></div><button style={styles.closeButton} onClick={resetTestForm}>✕</button></div>
         <form onSubmit={saveTest}><div style={styles.formGrid}><FormField label="Test Name *" value={testName} onChange={setTestName} placeholder="Unit Test 1"/><FormField label="Subject *" value={testSubject} onChange={setTestSubject} placeholder="Mathematics"/><FormField label="Class" value={testClass} onChange={setTestClass} placeholder="All classes" type="select" options={[{label:"All classes",value:""}, ...Array.from(new Set(students.map(s=>s.className).filter(Boolean))).map(v=>({label:v as string,value:v as string}))]}/><FormField label="Batch" value={testBatch} onChange={setTestBatch} placeholder="All batches"/><FormField label="Test Date *" value={testDate} onChange={setTestDate} type="date"/><FormField label="Total Marks *" value={testTotal} onChange={setTestTotal} type="number"/></div>
-          <div style={styles.uploadGrid}><label style={styles.uploadBox}>📄 Question Paper<input type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png" onChange={e=>setTestQuestionFile(e.target.files?.[0] || null)}/><small>{testQuestionFile?.name || editingTest?.questionPaperName || "Choose file"}</small></label><label style={styles.uploadBox}>📝 Answer Sheet / Solution<input type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png" onChange={e=>setTestAnswerFile(e.target.files?.[0] || null)}/><small>{testAnswerFile?.name || editingTest?.answerSheetName || "Choose file"}</small></label></div>
           <h3 style={{marginTop:24}}>Student Marks & Attendance</h3><div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Present?</th><th style={styles.th}>Marks / {Number(testTotal)||0}</th><th style={styles.th}>%</th></tr></thead><tbody>{students.filter(s=>(!testClass || s.className===testClass)&&(!testBatch || s.batch===testBatch)).map(s=>{if(!s.studentId)return null; const r=testResults[s.studentId]||{present:true,marks:null}; const pct=r.present&&r.marks!=null?(Number(r.marks)/Number(testTotal||1))*100:null; return <tr key={s.studentId}><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}><input type="checkbox" checked={r.present!==false} onChange={e=>setTestResults(prev=>({...prev,[s.studentId!]:{...r,present:e.target.checked,marks:e.target.checked?r.marks:null}}))}/> {r.present===false?"Absent":"Present"}</td><td style={styles.td}><input style={styles.compactInput} type="number" min="0" max={Number(testTotal)||0} disabled={r.present===false} value={r.marks ?? ""} onChange={e=>setTestResults(prev=>({...prev,[s.studentId!]:{...r,present:true,marks:e.target.value===""?null:Number(e.target.value)}}))}/></td><td style={styles.td}>{pct==null?"-":`${pct.toFixed(1)}%`}</td></tr>})}</tbody></table></div>
           <div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={resetTestForm}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingTest}>{savingTest?"Saving...":"💾 Save Test & Results"}</button></div>
         </form></div>}

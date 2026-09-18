@@ -128,7 +128,7 @@ Deploy both:
 - `firestore.rules`
 - `storage.rules`
 
-The app uses Firebase Authentication, Firestore and Storage.
+The app uses Firebase Authentication and Firestore. File uploads for profile photos and test papers are intentionally disabled because Firebase Storage is not enabled.
 
 ## Recommended first test after deployment
 
@@ -137,7 +137,7 @@ The app uses Firebase Authentication, Firestore and Storage.
 3. Students → delete a temporary test student
 4. Attendance → mark today's attendance → save
 5. Log in as that student and verify the calendar
-6. Tests & Results → create a test → enter marks → upload papers
+6. Tests & Results → create a test → enter marks
 7. Expand the test's result sheet
 8. Check the all-class ranking
 9. Homework → assign students → toggle Done / Not Done
