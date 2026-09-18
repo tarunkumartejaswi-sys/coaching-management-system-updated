@@ -1,5 +1,3 @@
-export const config = { runtime: "nodejs20.x" };
-
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
@@ -50,7 +48,7 @@ async function requireAdmin(req) {
   const decoded = await adminAuth.verifyIdToken(authorization.slice("Bearer ".length));
   const adminProfile = await firestore.collection("users").doc(decoded.uid).get();
 
-  if (!adminProfile.exists || adminProfile.data()?.role !== "admin") {
+  if (!adminProfile.exists || !["admin", "Admin", "ADMIN"].includes(adminProfile.data()?.role)) {
     const error = new Error("Only an admin can manage student accounts.");
     error.statusCode = 403;
     throw error;
