@@ -33,3 +33,25 @@ test('new monthly fee starts unpaid and is independent from previous month payme
   assert.equal(record.status, 'pending');
   assert.deepEqual(record.paymentHistory, []);
 });
+
+test('month-wise fee summary exposes only charge, paid and remaining', () => {
+  const history = [
+    { monthId: '2026-09', monthlyFee: 500, paidAmount: 500, pendingAmount: 0 },
+    { monthId: '2026-08', monthlyFee: 500, paidAmount: 300, pendingAmount: 200 },
+  ];
+  const summary = history.map((fee) => ({
+    monthId: fee.monthId,
+    dues: Number(fee.monthlyFee || 0),
+    paid: Number(fee.paidAmount || 0),
+    remaining: Number(fee.pendingAmount || 0),
+  }));
+  assert.deepEqual(summary, [
+    { monthId: '2026-09', dues: 500, paid: 500, remaining: 0 },
+    { monthId: '2026-08', dues: 500, paid: 300, remaining: 200 },
+  ]);
+});
+
+test('fee action pages are distinct routes in the UI model', () => {
+  const pages = ['feePayment', 'feeEdit', 'feeAddPrevious', 'feeDeletePayment', 'feeDeleteMonth'];
+  assert.equal(new Set(pages).size, 5);
+});

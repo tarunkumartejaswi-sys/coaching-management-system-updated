@@ -217,6 +217,7 @@ export default function App() {
 
   const [page, setPage] = useState("dashboard");
   const [studentPage, setStudentPage] = useState("dashboard");
+  const [feeActionPayment, setFeeActionPayment] = useState<{ student: Student; fee: Fee; paymentIndex?: number } | null>(null);
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [crRequests, setCrRequests] = useState<any[]>([]);
   const [crMessage, setCrMessage] = useState("");
@@ -392,6 +393,9 @@ export default function App() {
       const allFees = await getAllFees();
       setFees(allFees);
 
+      const refreshedHistory = await getStudentFeeHistory(paymentStudent.studentId);
+      setSelectedFeeHistory(refreshedHistory);
+
       const updatedStudents = await getStudents();
       setStudents(updatedStudents);
     } catch (error: any) {
@@ -406,18 +410,23 @@ export default function App() {
     }
   };
 
-  const openPayment = async (student: Student) => {
+  const openPayment = async (student: Student, selectedMonthFee?: Fee) => {
     if (!student.studentId) return;
 
     try {
-      await ensureCurrentMonthFee(student);
-      const fee = await getCurrentMonthFee(student.studentId);
+      let fee = selectedMonthFee;
+      if (!fee) {
+        await ensureCurrentMonthFee(student);
+        fee = await getCurrentMonthFee(student.studentId);
+      }
+      setSelectedFeeStudent(student);
       setPaymentStudent(student);
       setPaymentFee(fee);
       setPaymentAmount(String(fee?.pendingAmount || 0));
       setPaymentMethod("Cash");
       setPaymentNote("");
-      setShowPayment(true);
+      setShowPayment(false);
+      setPage("feePayment");
     } catch (error: any) {
       setFeeMessage(
         `Firebase Error: ${error?.code || "unknown-error"} | ${
@@ -468,6 +477,7 @@ export default function App() {
       setShowPayment(false);
       setPaymentStudent(null);
       setPaymentFee(null);
+      setPage("feeDetail");
       setFeeMessage("Payment recorded successfully! ✅");
     } catch (error: any) {
       console.error("Payment error:", error);
@@ -511,10 +521,12 @@ export default function App() {
 
   const openEditMonthlyFee = (student: Student) => {
     if (!isAdmin) return;
+    setSelectedFeeStudent(student);
     setEditFeeStudent(student);
     setEditMonthlyFee(String(student.monthlyFee ?? student.feeDue ?? 0));
     setFeeMessage("");
-    setShowEditFee(true);
+    setShowEditFee(false);
+    setPage("feeEdit");
   };
 
   const saveMonthlyFeeEdit = async (e: React.FormEvent) => {
@@ -583,6 +595,7 @@ export default function App() {
 
       setShowEditFee(false);
       setEditFeeStudent(null);
+      setPage("feeDetail");
       setFeeMessage(
         "Monthly fee updated successfully! Previous months were kept unchanged. ✅"
       );
@@ -652,32 +665,44 @@ export default function App() {
     if (page === "loginHistory" && isAdmin) loadLoginHistory();
   }, [page, isAdmin]);
 
+  const openDeleteFeePayment = (student: Student, fee: Fee, paymentIndex: number) => {
+    if (!isAdmin || !fee.paymentHistory?.[paymentIndex]) return;
+    setFeeActionPayment({ student, fee, paymentIndex });
+    setPage("feeDeletePayment");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   const handleDeleteFeePayment = async (student: Student, fee: Fee, paymentIndex: number) => {
     if (!isAdmin || !student.studentId || !fee.monthId) return;
-    const payment = fee.paymentHistory?.[paymentIndex];
-    if (!payment) return;
-    if (!window.confirm(`Delete payment of ₹${payment.amount} for ${fee.monthId}?`)) return;
     try {
       await deleteFeePayment(student.studentId, fee.monthId, paymentIndex);
-      const history = await getStudentFeeHistory(student.studentId);
-      setSelectedFeeHistory(history);
+      setSelectedFeeHistory(await getStudentFeeHistory(student.studentId));
       setFees(await getAllFees());
       setStudents(await getStudents());
+      setFeeActionPayment(null);
+      setPage("feeDetail");
       setFeeMessage("Payment deleted and fee totals recalculated. ✅");
     } catch (error: any) {
       setFeeMessage(`Unable to delete payment: ${error?.message || "Unknown error"}`);
     }
   };
 
+  const openDeleteFeeMonth = (student: Student, fee: Fee) => {
+    if (!isAdmin || !student.studentId || !fee.monthId) return;
+    setFeeActionPayment({ student, fee });
+    setPage("feeDeleteMonth");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   const handleDeleteFeeMonth = async (student: Student, fee: Fee) => {
     if (!isAdmin || !student.studentId || !fee.monthId) return;
-    if (!window.confirm(`Delete the entire ${fee.monthId} fee record for ${student.name || "this student"}? All payments recorded in this month will be removed.`)) return;
     try {
       await deleteFeeMonth(student.studentId, fee.monthId);
-      const history = await getStudentFeeHistory(student.studentId);
-      setSelectedFeeHistory(history);
+      setSelectedFeeHistory(await getStudentFeeHistory(student.studentId));
       setFees(await getAllFees());
       setStudents(await getStudents());
+      setFeeActionPayment(null);
+      setPage("feeDetail");
       setFeeMessage(`Fee month ${fee.monthId} deleted and totals recalculated. ✅`);
     } catch (error: any) {
       setFeeMessage(`Unable to delete fee month: ${error?.message || "Unknown error"}`);
@@ -1882,13 +1907,15 @@ export default function App() {
 
   const openAddFeeMonth = (student: Student) => {
     if (!isAdmin) return;
+    setSelectedFeeStudent(student);
     setAddFeeStudent(student);
     setAddFeeMonth("");
     setAddFeeAmount(String(student.monthlyFee ?? 0));
     setAddFeeDueDate("");
     setAddFeeNote("");
     setFeeMessage("");
-    setShowAddFeeMonth(true);
+    setShowAddFeeMonth(false);
+    setPage("feeAddPrevious");
   };
 
   const saveAddedFeeMonth = async (e: React.FormEvent) => {
@@ -1933,6 +1960,7 @@ export default function App() {
       setStudents(updatedStudents);
       setShowAddFeeMonth(false);
       setAddFeeStudent(null);
+      setPage("feeDetail");
       setFeeMessage(`Fee for ${addFeeMonth} added successfully! ✅`);
     } catch (error: any) {
       console.error("Add fee month error:", error);
@@ -1948,12 +1976,14 @@ export default function App() {
 
   const openEditHistoryFee = (student: Student, fee: Fee) => {
     if (!isAdmin) return;
+    setSelectedFeeStudent(student);
     setEditHistoryFeeStudent(student);
     setEditHistoryFee(fee);
     setEditHistoryAmount(String(fee.monthlyFee ?? 0));
     setEditHistoryDueDate(fee.dueDate || "");
     setFeeMessage("");
-    setShowEditHistoryFee(true);
+    setShowEditHistoryFee(false);
+    setPage("feeEditMonth");
   };
 
   const saveHistoryFeeEdit = async (e: React.FormEvent) => {
@@ -1986,9 +2016,11 @@ export default function App() {
       const updatedStudents = await getStudents();
       setStudents(updatedStudents);
       setShowEditHistoryFee(false);
+      const editedMonth = editHistoryFee.monthId;
       setEditHistoryFee(null);
       setEditHistoryFeeStudent(null);
-      setFeeMessage(`Fee for ${editHistoryFee.monthId} updated successfully! ✅`);
+      setPage("feeDetail");
+      setFeeMessage(`Fee for ${editedMonth} updated successfully! ✅`);
     } catch (error: any) {
       console.error("History fee edit error:", error);
       setFeeMessage(
@@ -3161,7 +3193,7 @@ export default function App() {
     return <>
       <div style={styles.pageHeader}><div><button style={styles.textButton} onClick={() => { setSelectedFeeStudent(null); setPage("fees"); }}>← Back to Fees</button><h1>💰 Fee Details</h1><p style={styles.muted}>{student.name} · {student.studentId} · {student.className}{student.batch ? ` · ${student.batch}` : ""}</p></div><span style={status === "paid" ? styles.paidBadge : status === "partial" ? styles.partialBadge : styles.pendingBadge}>{status === "paid" ? "🟢 PAID" : status === "partial" ? "🟠 PARTIAL" : "🔴 DUE"}</span></div>
       <div style={styles.card}><div style={styles.feeDetailHero}><div><span style={styles.smallLabel}>TOTAL FEE</span><h2 style={{margin:"3px 0"}}>₹{totalCharged.toLocaleString("en-IN")}</h2><p style={styles.muted}>Complete fee record for {student.name}</p></div><div style={styles.feeDetailMetrics}><div><span style={styles.smallLabel}>TOTAL PAID</span><strong style={{color:"#15803d"}}>₹{totalPaid.toLocaleString("en-IN")}</strong></div><div><span style={styles.smallLabel}>TOTAL PENDING</span><strong style={{color:totalPending===0?"#15803d":"#b91c1c"}}>₹{totalPending.toLocaleString("en-IN")}</strong></div><div><span style={styles.smallLabel}>COLLECTION</span><strong>{percent}%</strong></div></div><div style={{...styles.progressTrack,marginTop:14}}><div style={{...styles.progressFill,width:`${percent}%`}}/></div>{totalPending===0&&<div style={styles.paidNotice}>✅ All recorded dues are cleared. Overall status: <strong>PAID</strong>.</div>}</div></div>
-      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📅 Month-wise Fee Details</h2><p style={styles.muted}>Every recorded month, payment and remaining balance.</p></div>{isAdmin&&<button style={styles.primaryButtonSmall} onClick={()=>openAddFeeMonth(student)}>➕ Add Month</button>}</div>{history.length===0?<div style={styles.emptyBox}>No fee history available.</div>:history.map(f=><div key={f.id} style={styles.monthFeeCard}><div style={styles.sectionTitleRow}><strong>{f.monthId}</strong><span style={getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="paid"?styles.paidBadge:getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="partial"?styles.partialBadge:styles.pendingBadge}>{getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="paid"?"🟢 Paid":getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="partial"?"🟠 Partial":"🔴 Due"}</span></div><div style={styles.feeHistoryGrid}><div><span style={styles.smallLabel}>Fee</span><strong>₹{f.monthlyFee||0}</strong></div><div><span style={styles.smallLabel}>Paid</span><strong>₹{f.paidAmount||0}</strong></div><div><span style={styles.smallLabel}>Pending</span><strong>₹{f.pendingAmount||0}</strong></div><div><span style={styles.smallLabel}>Due Date</span><strong>{f.dueDate||"—"}</strong></div></div><div style={{marginTop:10}}><span style={styles.smallLabel}>Payment History</span>{(f.paymentHistory||[]).length===0?<span style={styles.muted}>No payments recorded.</span>:(f.paymentHistory||[]).map((p,i)=><div key={i} style={styles.paymentHistoryRow}><strong>₹{p.amount}</strong><span>{new Date(p.date).toLocaleString("en-IN")}</span><span>{p.method||"—"}</span><span>{p.note||""}</span></div>)}</div>{isAdmin&&<div style={styles.formActions}><button style={styles.editButton} onClick={()=>openEditHistoryFee(student,f)}>✏️ Edit Month</button></div>}</div>)}</div>
+      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📅 Month-wise Fee Details</h2><p style={styles.muted}>Every recorded month, payment and remaining balance.</p></div>{isAdmin&&<button style={styles.primaryButtonSmall} onClick={()=>openAddFeeMonth(student)}>➕ Add Month</button>}</div>{history.length===0?<div style={styles.emptyBox}>No fee history available.</div>:history.map(f=><div key={f.id} style={styles.monthFeeCard}><div style={styles.sectionTitleRow}><strong>{f.monthId}</strong><span style={getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="paid"?styles.paidBadge:getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="partial"?styles.partialBadge:styles.pendingBadge}>{getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="paid"?"🟢 Paid":getMonthlyFeeStatus(Number(f.monthlyFee || 0), Number(f.pendingAmount || 0), Number(f.paidAmount || 0))==="partial"?"🟠 Partial":"🔴 Due"}</span></div><div style={styles.feeHistoryGrid}><div><span style={styles.smallLabel}>Fee Dues</span><strong>₹{f.monthlyFee||0}</strong></div><div><span style={styles.smallLabel}>Paid</span><strong>₹{f.paidAmount||0}</strong></div><div><span style={styles.smallLabel}>Remaining</span><strong>₹{f.pendingAmount||0}</strong></div><div><span style={styles.smallLabel}>Due Date</span><strong>{f.dueDate||"—"}</strong></div></div><div style={{marginTop:10}}><span style={styles.smallLabel}>Payment History</span>{(f.paymentHistory||[]).length===0?<span style={styles.muted}>No payments recorded.</span>:(f.paymentHistory||[]).map((p,i)=><div key={i} style={styles.paymentHistoryRow}><strong>₹{p.amount}</strong><span>{new Date(p.date).toLocaleString("en-IN")}</span><span>{p.method||"—"}</span><span>{p.note||""}</span></div>)}</div>{isAdmin&&<div style={styles.formActions}><button style={styles.editButton} onClick={()=>openEditHistoryFee(student,f)}>✏️ Edit Month</button></div>}</div>)}</div>
     </>;
   };
 
@@ -3352,6 +3384,26 @@ export default function App() {
   };
 
   /* =========================================================
+     FEE ACTION PAGES
+  ========================================================= */
+  const feeBack = () => setPage(selectedFeeStudent ? "feeDetail" : "fees");
+
+  const feePaymentPage = () => !paymentStudent || !paymentFee ? null : <div>
+    <div style={styles.pageHeader}><div><button style={styles.textButton} onClick={feeBack}>← Back</button><h1>💵 Make Payment</h1><p style={styles.muted}>{paymentStudent.name} · {paymentFee.monthId}</p></div></div>
+    <div style={styles.card}><div style={styles.grid}><StatCard title="Fee Dues" value={`₹${Number(paymentFee.monthlyFee||0).toLocaleString("en-IN")}`} icon="💰"/><StatCard title="Fee Paid" value={`₹${Number(paymentFee.paidAmount||0).toLocaleString("en-IN")}`} icon="🟢"/><StatCard title="Remaining" value={`₹${Number(paymentFee.pendingAmount||0).toLocaleString("en-IN")}`} icon="🔴"/></div>
+    <form onSubmit={savePayment}><div style={styles.formGrid}><FormField label="Payment Amount ₹" value={paymentAmount} onChange={setPaymentAmount} placeholder="Enter amount" type="number"/><div><label style={styles.label}>Payment Method</label><select style={styles.input} value={paymentMethod} onChange={e=>setPaymentMethod(e.target.value)}><option>Cash</option><option>UPI</option><option>Bank Transfer</option><option>Card</option></select></div><FormField label="Note" value={paymentNote} onChange={setPaymentNote} placeholder="Optional note"/></div><div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={feeBack}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingPayment}>{savingPayment?"Saving...":"✅ Save Payment"}</button></div></form></div></div>;
+
+  const feeEditPage = () => !editFeeStudent ? null : <div><div style={styles.pageHeader}><div><button style={styles.textButton} onClick={feeBack}>← Back</button><h1>✏️ Edit Monthly Fee</h1><p style={styles.muted}>{editFeeStudent.name} · {editFeeStudent.studentId}</p></div></div><div style={styles.card}><form onSubmit={saveMonthlyFeeEdit}><div style={styles.formGrid}><FormField label="Student" value={editFeeStudent.name||""} onChange={()=>{}} placeholder="Student"/><FormField label="Monthly Fee ₹" value={editMonthlyFee} onChange={setEditMonthlyFee} placeholder="1500" type="number"/></div><div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={feeBack}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingFeeEdit}>{savingFeeEdit?"Saving...":"💾 Save Fee"}</button></div></form></div></div>;
+
+  const feeAddPreviousPage = () => !addFeeStudent ? null : <div><div style={styles.pageHeader}><div><button style={styles.textButton} onClick={feeBack}>← Back</button><h1>📅 Add Previous Dues</h1><p style={styles.muted}>{addFeeStudent.name} · {addFeeStudent.studentId}</p></div></div><div style={styles.card}><div style={styles.infoNotice}>Add a missing previous month. Its remaining balance becomes part of the student's total outstanding dues.</div><form onSubmit={saveAddedFeeMonth}><div style={styles.formGrid}><div><label style={styles.label}>Month</label><input style={styles.input} type="month" value={addFeeMonth} onChange={e=>setAddFeeMonth(e.target.value)} required/></div><FormField label="Fee Dues ₹" value={addFeeAmount} onChange={setAddFeeAmount} type="number" placeholder="1000"/><div><label style={styles.label}>Due Date</label><input style={styles.input} type="date" value={addFeeDueDate} onChange={e=>setAddFeeDueDate(e.target.value)}/></div><FormField label="Note" value={addFeeNote} onChange={setAddFeeNote} placeholder="Previous dues"/></div><div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={feeBack}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingAddFee}>{savingAddFee?"Saving...":"➕ Add Previous Dues"}</button></div></form></div></div>;
+
+  const feeEditMonthPage = () => !editHistoryFeeStudent || !editHistoryFee ? null : <div><div style={styles.pageHeader}><div><button style={styles.textButton} onClick={feeBack}>← Back</button><h1>✏️ Edit Month</h1><p style={styles.muted}>{editHistoryFeeStudent.name} · {editHistoryFee.monthId}</p></div></div><div style={styles.card}><div style={styles.feeHistoryGrid}><div><span style={styles.smallLabel}>Fee Dues</span><strong>₹{editHistoryFee.monthlyFee||0}</strong></div><div><span style={styles.smallLabel}>Fee Paid</span><strong>₹{editHistoryFee.paidAmount||0}</strong></div><div><span style={styles.smallLabel}>Remaining</span><strong>₹{editHistoryFee.pendingAmount||0}</strong></div></div><form onSubmit={saveHistoryFeeEdit}><div style={styles.formGrid}><FormField label="Fee Dues ₹" value={editHistoryAmount} onChange={setEditHistoryAmount} type="number" placeholder="1000"/><div><label style={styles.label}>Due Date</label><input style={styles.input} type="date" value={editHistoryDueDate} onChange={e=>setEditHistoryDueDate(e.target.value)}/></div></div><div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={feeBack}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingHistoryEdit}>{savingHistoryEdit?"Saving...":"💾 Save Month"}</button></div></form></div></div>;
+
+  const feeDeletePaymentPage = () => { if (!feeActionPayment || feeActionPayment.paymentIndex===undefined) return null; const {student,fee,paymentIndex}=feeActionPayment; const payment=fee.paymentHistory?.[paymentIndex]; if(!payment)return null; return <div><div style={styles.pageHeader}><div><button style={styles.textButton} onClick={feeBack}>← Back</button><h1>🗑️ Delete Payment</h1><p style={styles.muted}>{student.name} · {fee.monthId}</p></div></div><div style={styles.card}><div style={styles.warningBox}>This payment will be permanently deleted and the monthly balance recalculated.</div><div style={styles.feeHistoryGrid}><div><span style={styles.smallLabel}>Payment</span><strong>₹{payment.amount}</strong></div><div><span style={styles.smallLabel}>Date</span><strong>{payment.date?new Date(payment.date).toLocaleString("en-IN"):"—"}</strong></div><div><span style={styles.smallLabel}>Method</span><strong>{payment.method||"Cash"}</strong></div></div><div style={styles.formActions}><button style={styles.secondaryButton} onClick={feeBack}>Cancel</button><button style={styles.deleteButton} onClick={()=>handleDeleteFeePayment(student,fee,paymentIndex)}>🗑️ Delete Payment</button></div></div></div>; };
+
+  const feeDeleteMonthPage = () => { if (!feeActionPayment) return null; const {student,fee}=feeActionPayment; return <div><div style={styles.pageHeader}><div><button style={styles.textButton} onClick={feeBack}>← Back</button><h1>🗑️ Delete Fee Month</h1><p style={styles.muted}>{student.name} · {fee.monthId}</p></div></div><div style={styles.card}><div style={styles.warningBox}>This removes the entire month and all payments recorded in it. This cannot be undone.</div><div style={styles.feeHistoryGrid}><div><span style={styles.smallLabel}>Fee Dues</span><strong>₹{fee.monthlyFee||0}</strong></div><div><span style={styles.smallLabel}>Fee Paid</span><strong>₹{fee.paidAmount||0}</strong></div><div><span style={styles.smallLabel}>Remaining</span><strong>₹{fee.pendingAmount||0}</strong></div></div><div style={styles.formActions}><button style={styles.secondaryButton} onClick={feeBack}>Cancel</button><button style={styles.deleteButton} onClick={()=>handleDeleteFeeMonth(student,fee)}>🗑️ Delete Month</button></div></div></div>; };
+
+  /* =========================================================
      FEES PAGE
   ========================================================= */
 
@@ -3419,21 +3471,9 @@ export default function App() {
         )}
 
         <div style={styles.grid}>
-          <StatCard
-            title="Monthly Fees"
-            value={`₹${totalMonthlyFees}`}
-            icon="💵"
-          />
-          <StatCard
-            title="Paid This Month"
-            value={`₹${totalPaidThisMonth}`}
-            icon="🟢"
-          />
-          <StatCard
-            title="Total Pending"
-            value={`₹${totalPending}`}
-            icon="🔴"
-          />
+          <StatCard title="Fee Dues" value={`₹${totalMonthlyFees.toLocaleString("en-IN")}`} icon="💰" />
+          <StatCard title="Fee Paid" value={`₹${totalPaidThisMonth.toLocaleString("en-IN")}`} icon="🟢" />
+          <StatCard title="Remaining" value={`₹${totalPending.toLocaleString("en-IN")}`} icon="🔴" />
           <StatCard
             title="Students"
             value={String(students.length)}
@@ -3462,11 +3502,9 @@ export default function App() {
                   <th style={styles.th}>Student</th>
                   <th style={styles.th}>Class</th>
                   <th style={styles.th}>Batch</th>
-                  <th style={styles.th}>Monthly Fee</th>
-                  <th style={styles.th}>Paid This Month</th>
-                  <th style={styles.th}>Due This Month</th>
-                  <th style={styles.th}>Total Pending</th>
-                  <th style={styles.th}>Status</th>
+                  <th style={styles.th}>Fee Dues</th>
+                  <th style={styles.th}>Fee Paid</th>
+                  <th style={styles.th}>Remaining</th>
                   <th style={styles.th}>Action</th>
                 </tr>
               </thead>
@@ -3488,8 +3526,6 @@ export default function App() {
                   // Status is based on the student's TOTAL outstanding balance,
                   // not only the current month's balance. If every pending due
                   // is cleared, the student must always show Paid.
-                  const status = getMonthlyFeeStatus(monthly, totalStudentPending, paid);
-
                   return (
                     <tr key={student.studentId || student.id}>
                       <td style={styles.td}>{student.studentId || "-"}</td>
@@ -3513,39 +3549,9 @@ export default function App() {
 
                       <td style={styles.td}>{student.batch || "-"}</td>
 
-                      <td style={styles.td}>
-                        <strong>₹{monthly}</strong>
-                      </td>
-
-                      <td style={styles.td}>₹{paid}</td>
-
-                      <td style={styles.td}>
-                        <strong>₹{remaining}</strong>
-                      </td>
-
-                      <td style={styles.td}>
-                        <strong style={{color: totalStudentPending === 0 ? "#15803d" : "#b91c1c"}}>
-                          ₹{totalStudentPending.toLocaleString("en-IN")}
-                        </strong>
-                      </td>
-
-                      <td style={styles.td}>
-                        <span
-                          style={
-                            status === "paid"
-                              ? styles.paidBadge
-                              : status === "partial"
-                              ? styles.partialBadge
-                              : styles.pendingBadge
-                          }
-                        >
-                          {status === "paid"
-                            ? "🟢 Paid"
-                            : status === "partial"
-                            ? "🟠 Partial"
-                            : "🔴 Due"}
-                        </span>
-                      </td>
+                      <td style={styles.td}><strong>₹{monthly.toLocaleString("en-IN")}</strong></td>
+                      <td style={styles.td}><strong style={{color:"#15803d"}}>₹{paid.toLocaleString("en-IN")}</strong></td>
+                      <td style={styles.td}><strong style={{color: totalStudentPending===0?"#15803d":"#b91c1c"}}>₹{totalStudentPending.toLocaleString("en-IN")}</strong></td>
 
                       <td style={styles.td}>
                         <div
@@ -3912,13 +3918,14 @@ export default function App() {
                   <div style={styles.monthFeeCard}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                       <strong>📅 {fee.monthId}</strong>
+                      {fee.pendingAmount > 0 && <button style={styles.paidButton} onClick={() => openPayment(selectedFeeStudent, fee)}>💵 Make Payment</button>}
                       <button
                         style={styles.editButton}
                         onClick={() => openEditHistoryFee(selectedFeeStudent, fee)}
                       >
                         ✏️ Edit This Month
                       </button>
-                      <button style={styles.deleteButton} onClick={() => handleDeleteFeeMonth(selectedFeeStudent, fee)}>🗑️ Delete Month</button>
+                      <button style={styles.deleteButton} onClick={() => openDeleteFeeMonth(selectedFeeStudent, fee)}>🗑️ Delete Month</button>
                     </div>
 
                     <div style={styles.feeHistoryGrid}>
@@ -3961,7 +3968,7 @@ export default function App() {
                             {new Date(payment.date).toLocaleDateString()}
                           </span>
                           {payment.note && <span>{payment.note}</span>}
-                          <button style={styles.deleteButton} onClick={() => handleDeleteFeePayment(selectedFeeStudent, fee, index)}>🗑️ Delete</button>
+                          <button style={styles.deleteButton} onClick={() => openDeleteFeePayment(selectedFeeStudent, fee, index)}>🗑️ Delete</button>
                         </div>
                       ))
                     )}
@@ -4220,6 +4227,12 @@ export default function App() {
           {page === "fees" && feesPage()}
 
           {page === "feeDetail" && selectedFeeStudent && feeDetailPage(selectedFeeStudent, selectedFeeHistory)}
+          {page === "feePayment" && feePaymentPage()}
+          {page === "feeEdit" && feeEditPage()}
+          {page === "feeAddPrevious" && feeAddPreviousPage()}
+          {page === "feeEditMonth" && feeEditMonthPage()}
+          {page === "feeDeletePayment" && feeDeletePaymentPage()}
+          {page === "feeDeleteMonth" && feeDeleteMonthPage()}
 
           {page === "homework" && (isAdmin || isCR) && homeworkPage()}
 

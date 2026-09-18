@@ -112,3 +112,7 @@ radial-gradient(circle at 90% 20%,rgba(14,165,233,.08),transparent 24%),#f6f8fc}
   .appPage .studentPickerGrid { grid-template-columns:1fr !important; }
   .appPage .crPublicGrid { grid-template-columns:1fr !important; }
 }
+
+/* Fee action pages: compact mobile-first controls */
+.feeActionGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+@media(max-width:600px){.feeActionGrid{grid-template-columns:1fr}.appPage .feeHistoryGrid{grid-template-columns:1fr!important}.appPage .paymentHistoryRow{align-items:flex-start!important;flex-wrap:wrap!important}.appPage .feeStudentButton{width:100%!important}}
