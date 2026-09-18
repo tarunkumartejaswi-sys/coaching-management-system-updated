@@ -191,6 +191,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   const [page, setPage] = useState("dashboard");
+  const [studentPage, setStudentPage] = useState("dashboard");
 
   /* =========================================================
      LOGIN
@@ -699,8 +700,14 @@ export default function App() {
           setProfileDraft(ownStudent || {});
           await loadDirector();
 
-          const ownFee = await getFeeByStudentId(userProfile.studentId);
-
+          let ownFee = await getFeeByStudentId(userProfile.studentId);
+          if (ownStudent?.studentId) {
+            try {
+              ownFee = await ensureCurrentMonthFee(ownStudent);
+            } catch (feeError) {
+              console.warn("Unable to create current month fee automatically:", feeError);
+            }
+          }
           setStudentFee(ownFee);
 
           const ownFeeHistory = await getStudentFeeHistory(
@@ -1265,11 +1272,22 @@ export default function App() {
   };
 
   const uploadAcademicFile = async (file: File, folder: string) => {
+    if (!file) throw new Error("Please choose a file.");
+    const allowedImages = file.type.startsWith("image/");
+    const maxBytes = allowedImages ? 5 * 1024 * 1024 : 15 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      throw new Error(`File is too large. Maximum size is ${allowedImages ? "5 MB" : "15 MB"}.`);
+    }
     const storage = getStorage();
     const safeName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
     const fileRef = storageRef(storage, `${folder}/${safeName}`);
-    await uploadBytes(fileRef, file);
-    return getDownloadURL(fileRef);
+    await uploadBytes(fileRef, file, {
+      contentType: file.type || "application/octet-stream",
+      customMetadata: { uploadedBy: user?.uid || "authenticated-user" },
+    });
+    const url = await getDownloadURL(fileRef);
+    if (!url) throw new Error("Upload completed but no download URL was returned.");
+    return url;
   };
 
   const saveTest = async (e: React.FormEvent) => {
@@ -1725,14 +1743,58 @@ export default function App() {
     const myTests = tests.filter((test) => {
       const result = (test.results || {})[studentSid];
       return Boolean(result?.present && result.marks !== null && result.marks !== undefined);
-    }).length;
-    const myPendingHomework = homeworkForStudent(studentData).filter(
-      (item) => !Boolean(((item as any).completion || {})[studentSid])
-    ).length;
+    });
+    const myHomework = homeworkForStudent(studentData);
+    const pendingHomework = myHomework.filter((item) => !Boolean(((item as any).completion || {})[studentSid]));
+    const recordedAttendance = attendanceDays.filter((d) => Boolean(getStudentAttendanceStatus(d, studentSid, studentData?.authUid)));
+    const presentDays = recordedAttendance.filter((d) => getStudentAttendanceStatus(d, studentSid, studentData?.authUid) === "present").length;
+    const absentDays = recordedAttendance.filter((d) => getStudentAttendanceStatus(d, studentSid, studentData?.authUid) === "absent").length;
+    const attendancePct = recordedAttendance.length ? (presentDays / recordedAttendance.length) * 100 : 0;
+    const profileFields = ["name", "fatherName", "motherName", "mobile", "dob", "gender", "address"];
+    const completedProfile = profileFields.filter((key) => String((studentData as any)?.[key] || "").trim()).length;
+    const profileProgress = Math.round((completedProfile / profileFields.length) * 100);
+
+    const goStudent = (next: string) => {
+      setStudentPage(next);
+      if (next === "profile") {
+        setProfileDraft(studentData || {});
+        setProfileMessage("");
+        setShowStudentProfile(true);
+      } else {
+        setShowStudentProfile(false);
+      }
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    };
+
+    const monthAttendance = (() => {
+      const [ys, ms] = studentCalendarMonth.split("-").map(Number);
+      const y = ys || new Date().getFullYear();
+      const m = (ms || new Date().getMonth() + 1) - 1;
+      const first = new Date(y, m, 1).getDay();
+      const days = new Date(y, m + 1, 0).getDate();
+      const monthKey = `${y}-${String(m + 1).padStart(2, "0")}`;
+      const map: Record<number, string> = {};
+      attendanceDays.filter((r) => (r.date || "").startsWith(monthKey)).forEach((r) => {
+        const status = getStudentAttendanceStatus(r, studentSid, studentData?.authUid);
+        if (status) map[Number((r.date || "").slice(-2))] = status;
+      });
+      return { y, m, first, days, map };
+    })();
+
+    const studentPageTitle: Record<string, string> = {
+      dashboard: "Dashboard",
+      profile: "My Profile",
+      attendance: "Attendance",
+      results: "Tests & Results",
+      homework: "Homework",
+      fees: "Fees",
+      notices: "Notices",
+      director: "Director",
+    };
 
     return (
-      <div style={styles.appPage}>
-        <header style={styles.topbar}>
+      <div style={{ ...styles.appPage, minHeight: "100vh" }}>
+        <header style={styles.studentTopbar}>
           <div style={styles.brandBlock}>
             <div style={styles.brandMark}>🎓</div>
             <div>
@@ -1751,234 +1813,220 @@ export default function App() {
           </div>
         </header>
 
-        <main style={styles.main}>
-          {showStudentProfile && <div style={styles.card}>
-            <div style={styles.formHeader}><div><h2>👤 Edit My Profile</h2><p style={styles.muted}>Update your personal information. Academic records remain controlled by admin.</p></div><button style={styles.closeButton} onClick={() => setShowStudentProfile(false)}>✕</button></div>
-            <form onSubmit={saveStudentProfile}>
-              <div style={styles.formGrid}>
-                <FormField label="Student Name" value={profileDraft.name || ""} onChange={v=>setProfileDraft(p=>({...p,name:v}))} />
-                <FormField label="Father's Name" value={profileDraft.fatherName || ""} onChange={v=>setProfileDraft(p=>({...p,fatherName:v}))} required={false} />
-                <FormField label="Mother's Name" value={profileDraft.motherName || ""} onChange={v=>setProfileDraft(p=>({...p,motherName:v}))} required={false} />
-                <FormField label="Mobile Number" value={profileDraft.mobile || ""} onChange={v=>setProfileDraft(p=>({...p,mobile:v}))} required={false} />
-                <FormField label="Date of Birth" value={profileDraft.dob || ""} onChange={v=>setProfileDraft(p=>({...p,dob:v}))} type="date" required={false} />
-                <FormField label="Gender" value={profileDraft.gender || ""} onChange={v=>setProfileDraft(p=>({...p,gender:v}))} type="select" required={false} options={[{label:"Select",value:""},{label:"Male",value:"Male"},{label:"Female",value:"Female"},{label:"Other",value:"Other"}]} />
+        <div style={styles.studentShell}>
+          <aside style={styles.studentSidebar}>
+            <div style={styles.studentNavLabel}>STUDENT PORTAL</div>
+            {[
+              ["dashboard", "🏠", "Dashboard"],
+              ["profile", "👤", "My Profile"],
+              ["attendance", "📅", "Attendance"],
+              ["results", "📝", "Tests & Results"],
+              ["homework", "📚", "Homework"],
+              ["fees", "💰", "Fees"],
+              ["notices", "📢", "Notices"],
+              ["director", "🎓", "Director"],
+            ].map(([key, icon, label]) => (
+              <button key={key} style={studentPage === key ? styles.studentNavActive : styles.studentNav}
+                onClick={() => goStudent(key)}>
+                <span>{icon}</span><span>{label}</span>
+              </button>
+            ))}
+            <div style={styles.studentSideCard}>
+              <span style={styles.smallLabel}>PROFILE COMPLETION</span>
+              <strong>{profileProgress}%</strong>
+              <div style={styles.progressTrack}><div style={{ ...styles.progressFill, width: `${profileProgress}%` }} /></div>
+              <small>Complete your extra details from My Profile.</small>
+            </div>
+          </aside>
+
+          <main style={styles.studentMain}>
+            <div style={styles.studentPageHeader}>
+              <div>
+                <span style={styles.heroEyebrow}>STUDENT PORTAL</span>
+                <h1 style={{ margin: "5px 0 2px" }}>{studentPageTitle[studentPage]}</h1>
+                <p style={styles.muted}>{studentData?.name || "Student"} · {studentData?.className || "Class not set"}{studentData?.batch ? ` · ${studentData.batch}` : ""}</p>
               </div>
-              <label style={styles.label}>Address</label><textarea style={{...styles.input,minHeight:80}} value={profileDraft.address || ""} onChange={e=>setProfileDraft(p=>({...p,address:e.target.value}))} />
-              <label style={styles.uploadBox}>📷 Profile Picture<input type="file" accept="image/*" onChange={e=>setProfilePhotoFile(e.target.files?.[0] || null)} /><small>{profilePhotoFile?.name || "Choose a photo"}</small></label>
-              {profileMessage && <div style={profileMessage.includes("successfully") ? styles.successBox : styles.errorBox}>{profileMessage}</div>}
-              <div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={()=>setShowStudentProfile(false)}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={profileSaving}>{profileSaving?"Saving...":"💾 Save Profile"}</button></div>
-            </form>
-          </div>}
-          <div style={styles.studentWelcome}>
-            <div>
-              <span style={styles.heroEyebrow}>STUDENT PORTAL</span>
-              <h1 style={{ margin: "8px 0 6px", fontSize: 30 }}>Welcome back, {studentData?.name || profile.name}! 👋</h1>
-              <p style={{ margin: 0, opacity: .82 }}>
-                {studentData?.className || "Class not set"}{studentData?.batch ? ` · ${studentData.batch}` : ""} · ID {studentSid}
-              </p>
-            </div>
-            <div style={styles.heroMetric}><span>Overall Rank</span><strong>{myRank ? `#${myRank.rank}` : "—"}</strong><small>Across all classes</small></div>
-          </div>
-
-          <div style={styles.grid}>
-            <StatCard title="Overall Average" value={myAverage ? `${myAverage.toFixed(1)}%` : "—"} icon="📊" />
-            <StatCard title="Attendance" value={myAttendance.recorded ? `${myAttendance.percentage.toFixed(0)}%` : "—"} icon="📅" />
-            <StatCard title="Tests Counted" value={String(myTests)} icon="📝" />
-            <StatCard title="Pending Homework" value={String(myPendingHomework)} icon="📚" />
-            <StatCard title="Monthly Fee"
-              value={`₹${
-                studentFee?.monthlyFee ??
-                studentData?.monthlyFee ??
-                studentData?.feeDue ??
-                0
-              }`}
-              icon="💰"
-            />
-
-            <StatCard title="Total Fee Due" value={`₹${studentData?.feeDue ?? 0}`} icon="🔴" />
-            <StatCard title="Overall Rank" value={myRank ? `#${myRank.rank}` : "—"} icon="🏆" />
-          </div>
-
-          <div style={styles.twoColumn}>
-            <div style={styles.card}>
-              <div style={styles.profileHero}>
-                <div style={styles.avatarLarge}>
-                  {studentData?.photoUrl ? <img src={studentData.photoUrl} alt="Student" style={styles.avatarImage} /> : "👤"}
-                </div>
-                <div style={{flex:1}}>
-                  <h2 style={{margin:"0 0 4px"}}>{studentData?.name || profile.name || "Student"}</h2>
-                  <p style={styles.muted}>ID: {profile.studentId || studentData?.studentId || "N/A"} · {studentData?.className || "Class not set"}</p>
-                </div>
-                <button style={styles.secondaryButton} onClick={() => { setProfileDraft(studentData || {}); setProfileMessage(""); setShowStudentProfile(true); }}>✏️ Edit Profile</button>
+              <div style={styles.studentHeaderRank}>
+                <span>OVERALL RANK</span><strong>{myRank ? `#${myRank.rank}` : "—"}</strong>
               </div>
-              <InfoRow label="Father's Name" value={studentData?.fatherName || "Not added"} />
-              <InfoRow label="Mother's Name" value={studentData?.motherName || "Not added"} />
-              <InfoRow label="Mobile" value={studentData?.mobile || "Not added"} />
-              <InfoRow label="Address" value={studentData?.address || "Not added"} />
-              <InfoRow label="Email" value={profile.email || user.email || "N/A"} />
             </div>
 
-            <div style={styles.card}>
-              <h2>🎓 Coaching Director</h2>
-              {director ? <div style={styles.directorCard}>
-                <div style={styles.avatarDirector}>{director.photoUrl ? <img src={director.photoUrl} alt="Director" style={styles.avatarImage} /> : "🎓"}</div>
-                <div><h3 style={{margin:"0 0 4px"}}>{director.name || "Director"}</h3><p style={styles.muted}>{director.title || "Director"}</p>{director.mobile && <div>📞 {director.mobile}</div>}{director.email && <div>✉️ {director.email}</div>}{director.address && <div>📍 {director.address}</div>}</div>
-              </div> : <div style={styles.emptyBox}>Director details have not been added yet.</div>}
-              {director?.message && <div style={styles.infoNotice}>💬 {director.message}</div>}
-            </div>
-
-            <div style={styles.card}>
-              <h2>📢 Notices</h2>
-              {notices.length === 0 ? <div style={styles.emptyBox}>No notices yet.</div> : notices.slice(0, 5).map((notice) => (
-                <div key={notice.id} style={styles.noticeItem}>
-                  <div style={styles.homeworkMeta}><strong>{notice.title}</strong><span>{notice.date}</span></div>
-                  <p style={{ margin: "7px 0" }}>{notice.message}</p>
-                  <span style={styles.noticeBadge}>{(notice.priority || "normal").toUpperCase()}</span>
+            {studentPage === "dashboard" && (
+              <>
+                <div style={styles.studentHero}>
+                  <div>
+                    <span style={styles.heroEyebrow}>WELCOME BACK</span>
+                    <h2 style={{ margin: "8px 0 5px", fontSize: 28 }}>Hello, {studentData?.name || "Student"} 👋</h2>
+                    <p style={{ margin: 0, opacity: .84 }}>Your academic snapshot, attendance and pending work in one clean place.</p>
+                  </div>
+                  <div style={styles.heroAvatar}>
+                    {studentData?.photoUrl ? <img src={studentData.photoUrl} alt="Student" style={styles.avatarImage} /> : "👤"}
+                  </div>
                 </div>
-              ))}
+                <div style={styles.grid}>
+                  <StatCard title="Overall Average" value={myAverage ? `${myAverage.toFixed(1)}%` : "—"} icon="📊" />
+                  <StatCard title="Attendance" value={recordedAttendance.length ? `${attendancePct.toFixed(0)}%` : "—"} icon="📅" />
+                  <StatCard title="Tests Counted" value={String(myTests.length)} icon="📝" />
+                  <StatCard title="Pending Homework" value={String(pendingHomework.length)} icon="📚" />
+                  <StatCard title="Monthly Fee" value={`₹${studentFee?.monthlyFee ?? studentData?.monthlyFee ?? 0}`} icon="💰" />
+                  <StatCard title="Fee Due" value={`₹${studentFee?.pendingAmount ?? 0}`} icon="🔴" />
+                </div>
+                <div style={styles.twoColumn}>
+                  <div style={styles.card}>
+                    <div style={styles.sectionTitleRow}><div><h2 style={{margin:0}}>📌 Quick Summary</h2><p style={styles.muted}>Your most important updates.</p></div></div>
+                    <div style={styles.quickList}>
+                      <button style={styles.quickItem} onClick={() => goStudent("attendance")}><span>📅 Attendance</span><strong>{attendancePct.toFixed(0)}%</strong></button>
+                      <button style={styles.quickItem} onClick={() => goStudent("results")}><span>📝 Test Results</span><strong>{myTests.length} tests</strong></button>
+                      <button style={styles.quickItem} onClick={() => goStudent("homework")}><span>📚 Homework</span><strong>{pendingHomework.length ? `${pendingHomework.length} pending` : "All clear"}</strong></button>
+                      <button style={styles.quickItem} onClick={() => goStudent("fees")}><span>💰 Fees</span><strong>{studentFee?.status === "paid" ? "Paid" : `₹${studentFee?.pendingAmount ?? 0} due`}</strong></button>
+                    </div>
+                  </div>
+                  <div style={styles.card}>
+                    <div style={styles.profileHero}>
+                      <div style={styles.avatarLarge}>{studentData?.photoUrl ? <img src={studentData.photoUrl} alt="Student" style={styles.avatarImage} /> : "👤"}</div>
+                      <div style={{flex:1}}><h2 style={{margin:"0 0 4px"}}>{studentData?.name || "Student"}</h2><p style={styles.muted}>ID: {studentSid} · {studentData?.className || "Class not set"}</p></div>
+                      <button style={styles.secondaryButton} onClick={() => goStudent("profile")}>✏️ Profile</button>
+                    </div>
+                    <InfoRow label="Father's Name" value={studentData?.fatherName || "Not added"} />
+                    <InfoRow label="Mother's Name" value={studentData?.motherName || "Not added"} />
+                    <InfoRow label="Mobile" value={studentData?.mobile || "Not added"} />
+                  </div>
+                </div>
+                <div style={styles.card}>
+                  <div style={styles.sectionTitleRow}><div><h2 style={{margin:0}}>📢 Latest Notices</h2><p style={styles.muted}>Tap Notices to view everything.</p></div><button style={styles.secondaryButton} onClick={() => goStudent("notices")}>View all</button></div>
+                  {notices.slice(0, 3).map((n) => <div key={n.id} style={styles.noticeItem}><div style={styles.homeworkMeta}><strong>{n.title}</strong><span>{n.date}</span></div><p style={{margin:"7px 0"}}>{n.message}</p></div>)}
+                  {!notices.length && <div style={styles.emptyBox}>No notices yet.</div>}
+                </div>
+              </>
+            )}
 
-              <h2 style={{ marginTop: 25 }}>📚 Homework</h2>
-
-              {homework.filter((item) => {
-                const classMatch = !item.className || item.className === studentData?.className;
-                const batchMatch = !item.batch || item.batch === studentData?.batch;
-                return classMatch && batchMatch;
-              }).length === 0 ? (
-                <div style={styles.emptyBox}>No homework assigned for your class yet.</div>
-              ) : (
-                <div>
-                  {homeworkForStudent(studentData)
-                    .slice(0, 8)
-                    .map((item) => (
-                      <div key={item.id} style={styles.homeworkItem}>
-                        <div style={styles.homeworkMeta}>
-                          <strong>{item.subject || "Homework"}</strong>
-                          <span>{item.day}, {item.homeworkDate} · {item.year}</span>
-                        </div>
-                        <h3 style={{ margin: "8px 0" }}>{item.title}</h3>
-                        <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>{item.description}</p>
-                        {item.dueDate && <small style={styles.muted}>Due: {item.dueDate}</small>}
-                        <div style={{ marginTop: 10 }}><span style={((item as any).completion || {})[studentData?.studentId || ""] ? styles.doneBadge : styles.pendingBadge}>{((item as any).completion || {})[studentData?.studentId || ""] ? "✓ Homework Done" : "⚠ Homework Not Done"}</span></div>
+            {studentPage === "profile" && (
+              <>
+                <div style={styles.card}>
+                  <div style={styles.profileHero}>
+                    <div style={styles.avatarLarge}>{studentData?.photoUrl ? <img src={studentData.photoUrl} alt="Student" style={styles.avatarImage} /> : "👤"}</div>
+                    <div style={{flex:1}}><h2 style={{margin:0}}>{studentData?.name || "Student"}</h2><p style={styles.muted}>Profile completion: {profileProgress}%</p></div>
+                    <button style={styles.primaryButtonSmall} onClick={() => { setProfileDraft(studentData || {}); setShowStudentProfile(true); }}>✏️ Edit Details</button>
+                  </div>
+                  <div style={styles.progressTrack}><div style={{...styles.progressFill,width:`${profileProgress}%`}} /></div>
+                  <div style={styles.formGrid}>
+                    <InfoRow label="Student ID" value={studentSid} />
+                    <InfoRow label="Class" value={studentData?.className || "Not set"} />
+                    <InfoRow label="Batch" value={studentData?.batch || "Not set"} />
+                    <InfoRow label="Father's Name" value={studentData?.fatherName || "Not added"} />
+                    <InfoRow label="Mother's Name" value={studentData?.motherName || "Not added"} />
+                    <InfoRow label="Mobile" value={studentData?.mobile || "Not added"} />
+                    <InfoRow label="DOB" value={studentData?.dob || "Not added"} />
+                    <InfoRow label="Gender" value={studentData?.gender || "Not added"} />
+                  </div>
+                  <InfoRow label="Address" value={studentData?.address || "Not added"} />
+                  <div style={styles.infoNotice}>💡 You may save a partially completed profile. Academic fields such as class, batch and Student ID remain controlled by admin.</div>
+                </div>
+                {showStudentProfile && (
+                  <div style={styles.card}>
+                    <div style={styles.formHeader}><div><h2>✏️ Edit My Profile</h2><p style={styles.muted}>You can save now and complete the remaining details later.</p></div><button style={styles.closeButton} onClick={() => setShowStudentProfile(false)}>✕</button></div>
+                    <form onSubmit={saveStudentProfile}>
+                      <div style={styles.formGrid}>
+                        <FormField label="Student Name" value={profileDraft.name || ""} onChange={v=>setProfileDraft(p=>({...p,name:v}))} required={false}/>
+                        <FormField label="Father's Name" value={profileDraft.fatherName || ""} onChange={v=>setProfileDraft(p=>({...p,fatherName:v}))} required={false}/>
+                        <FormField label="Mother's Name" value={profileDraft.motherName || ""} onChange={v=>setProfileDraft(p=>({...p,motherName:v}))} required={false}/>
+                        <FormField label="Mobile Number" value={profileDraft.mobile || ""} onChange={v=>setProfileDraft(p=>({...p,mobile:v}))} required={false}/>
+                        <FormField label="Date of Birth" value={profileDraft.dob || ""} onChange={v=>setProfileDraft(p=>({...p,dob:v}))} type="date" required={false}/>
+                        <FormField label="Gender" value={profileDraft.gender || ""} onChange={v=>setProfileDraft(p=>({...p,gender:v}))} type="select" required={false} options={[{label:"Select",value:""},{label:"Male",value:"Male"},{label:"Female",value:"Female"},{label:"Other",value:"Other"}]}/>
                       </div>
-                    ))}
+                      <label style={styles.label}>Address</label><textarea style={{...styles.input,minHeight:90}} value={profileDraft.address || ""} onChange={e=>setProfileDraft(p=>({...p,address:e.target.value}))} />
+                      <label style={styles.uploadBox}>📷 Profile Picture <input type="file" accept="image/jpeg,image/png,image/webp" onChange={e=>setProfilePhotoFile(e.target.files?.[0] || null)} /><small>{profilePhotoFile?.name || "JPG, PNG or WEBP · max 5 MB"}</small></label>
+                      {profileMessage && <div style={profileMessage.includes("successfully") ? styles.successBox : styles.errorBox}>{profileMessage}</div>}
+                      <div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={()=>setShowStudentProfile(false)}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={profileSaving}>{profileSaving?"Uploading & saving...":"💾 Save / Submit Profile"}</button></div>
+                    </form>
+                  </div>
+                )}
+              </>
+            )}
+
+            {studentPage === "attendance" && (
+              <div style={styles.card}>
+                <div style={styles.sectionTitleRow}><div><h2>📅 My Attendance</h2><p style={styles.muted}>The percentage and calendar below are calculated from the same daily attendance records.</p></div></div>
+                <div style={styles.feeHistoryGrid}>
+                  <div><span style={styles.smallLabel}>Present</span><strong>{presentDays}</strong></div>
+                  <div><span style={styles.smallLabel}>Absent</span><strong>{absentDays}</strong></div>
+                  <div><span style={styles.smallLabel}>Attendance</span><strong>{attendancePct.toFixed(0)}%</strong></div>
+                  <div><span style={styles.smallLabel}>Recorded Days</span><strong>{recordedAttendance.length}</strong></div>
                 </div>
-              )}
-              {homeworkForStudent(studentData).some(item => !((item as any).completion || {})[studentData?.studentId || ""]) && <div style={styles.warningBox}><strong>⚠ Your Pending Homework</strong><div style={{marginTop:6}}>{homeworkForStudent(studentData).filter(item => !((item as any).completion || {})[studentData?.studentId || ""]).slice(0,6).map(item => <div key={item.id}>🔴 {item.title} · Due {item.dueDate || "No due date"}</div>)}</div></div>}
-              {homeworkForStudent(studentData).some(item => homeworkDefaulters(item).length > 0) && <div style={styles.warningBox}><strong>📋 Class Homework Status</strong><p style={{margin:"5px 0 9px",fontWeight:500}}>Students with unfinished work are shown here so the class can keep track of pending assignments.</p>{homeworkForStudent(studentData).slice(0,6).map(item => { const assigned=students.filter(s=>s.studentId && homeworkForStudent(s).some(h=>h.id===item.id)); const defaulters=homeworkDefaulters(item); if(!assigned.length || !defaulters.length) return null; return <div key={item.id} style={{marginTop:7}}><strong>{item.title}</strong><div style={styles.defaulterList}>{defaulters.map(s=><span key={s.studentId} style={styles.notDoneStudentButton}>🔴 {s.name}</span>)}</div></div>; })}</div>}
-            </div>
-          </div>
-
-          <div style={styles.card}>
-            <div className="sectionTitleRow"><div><h2 style={{margin:"0 0 4px"}}>📅 My Attendance Calendar</h2><p style={styles.muted}>Green = Present · Red = Absent</p></div></div>
-            {(() => { const sid=studentSid; const authSid=studentData?.authUid || ""; const rows=attendanceDays.filter(d=>Boolean(getStudentAttendanceStatus(d,sid,authSid))); const present=rows.filter(d=>getStudentAttendanceStatus(d,sid,authSid)==="present").length; const pct=rows.length?present/rows.length*100:0; const [ys,ms]=studentCalendarMonth.split("-").map(Number); const y=ys||new Date().getFullYear(), m=(ms||new Date().getMonth()+1)-1; const first=new Date(y,m,1).getDay(); const days=new Date(y,m+1,0).getDate(); const monthKey=`${y}-${String(m+1).padStart(2,"0")}`; const map=Object.fromEntries(rows.filter(r=>(r.date||"").startsWith(monthKey)).map(r=>[Number((r.date||"").slice(-2)),getStudentAttendanceStatus(r,sid,authSid)])); return <><div style={styles.feeHistoryGrid}><div><span style={styles.smallLabel}>Present</span><strong>{present}</strong></div><div><span style={styles.smallLabel}>Absent</span><strong>{Math.max(rows.length-present,0)}</strong></div><div><span style={styles.smallLabel}>Attendance</span><strong>{pct.toFixed(0)}%</strong></div><div><span style={styles.smallLabel}>Recorded Days</span><strong>{rows.length}</strong></div></div><div style={styles.calendarCard}><div style={styles.calendarToolbar}><h3 style={{margin:0}}>{new Date(y,m,1).toLocaleDateString("en-IN",{month:"long",year:"numeric"})}</h3><input style={styles.monthInput} type="month" value={studentCalendarMonth} onChange={e=>setStudentCalendarMonth(e.target.value)} /></div><div style={styles.calendarGrid}>{["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d=><div key={d} style={styles.calendarHead}>{d}</div>)}{Array.from({length:first}).map((_,i)=><div key={"e"+i}/>) }{Array.from({length:days},(_,i)=>i+1).map(day=>{const status=map[day];return <div key={day} title={status||"No record"} style={{...styles.calendarDay,...(status==="present"?styles.calendarPresent:status==="absent"?styles.calendarAbsent:{})}}>{day}</div>})}</div></div></>; })()}
-          </div>
-
-          <div style={styles.card}>
-            <h2>💰 My Fee Details</h2>
-
-            <div style={styles.feeHistoryGrid}>
-              <div>
-                <span style={styles.smallLabel}>Current Month</span>
-                <strong>
-                  {studentFee?.monthId || new Date().toISOString().slice(0, 7)}
-                </strong>
-              </div>
-              <div>
-                <span style={styles.smallLabel}>Monthly Fee</span>
-                <strong>
-                  ₹
-                  {studentFee?.monthlyFee ??
-                    studentData?.monthlyFee ??
-                    studentData?.feeDue ??
-                    0}
-                </strong>
-              </div>
-              <div>
-                <span style={styles.smallLabel}>Paid This Month</span>
-                <strong>₹{studentFee?.paidAmount || 0}</strong>
-              </div>
-              <div>
-                <span style={styles.smallLabel}>Due This Month</span>
-                <strong>
-                  ₹
-                  {studentFee?.pendingAmount ??
-                    studentFee?.monthlyFee ??
-                    studentData?.monthlyFee ??
-                    studentData?.feeDue ??
-                    0}
-                </strong>
-              </div>
-            </div>
-
-            <h3>📜 Fee History</h3>
-
-            {studentFeeHistory.length === 0 ? (
-              <div style={styles.emptyBox}>No fee history available yet.</div>
-            ) : (
-              <div style={styles.tableWrapper}>
-                <table style={styles.table}>
-                  <thead>
-                    <tr>
-                      <th style={styles.th}>Month</th>
-                      <th style={styles.th}>Monthly Fee</th>
-                      <th style={styles.th}>Paid</th>
-                      <th style={styles.th}>Due</th>
-                      <th style={styles.th}>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {studentFeeHistory.map((fee) => (
-                      <tr key={fee.id}>
-                        <td style={styles.td}>{fee.monthId || "-"}</td>
-                        <td style={styles.td}>₹{fee.monthlyFee || 0}</td>
-                        <td style={styles.td}>₹{fee.paidAmount || 0}</td>
-                        <td style={styles.td}>
-                          <strong>₹{fee.pendingAmount || 0}</strong>
-                        </td>
-                        <td style={styles.td}>
-                          <span
-                            style={
-                              fee.status === "paid"
-                                ? styles.paidBadge
-                                : fee.status === "partial"
-                                ? styles.partialBadge
-                                : styles.pendingBadge
-                            }
-                          >
-                            {fee.status === "paid"
-                              ? "🟢 Paid"
-                              : fee.status === "partial"
-                              ? "🟠 Partial"
-                              : "🔴 Due"}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <div style={styles.calendarCard}>
+                  <div style={styles.calendarToolbar}><h3 style={{margin:0}}>{new Date(monthAttendance.y, monthAttendance.m, 1).toLocaleDateString("en-IN",{month:"long",year:"numeric"})}</h3><input style={styles.monthInput} type="month" value={studentCalendarMonth} onChange={e=>setStudentCalendarMonth(e.target.value)} /></div>
+                  <div style={styles.calendarGrid}>
+                    {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d=><div key={d} style={styles.calendarHead}>{d}</div>)}
+                    {Array.from({length:monthAttendance.first}).map((_,i)=><div key={"e"+i}/>)}
+                    {Array.from({length:monthAttendance.days},(_,i)=>i+1).map(day=>{
+                      const status=monthAttendance.map[day];
+                      return <div key={day} title={status ? `${day}: ${status}` : `${day}: No record`} style={{...styles.calendarDay,...(status==="present"?styles.calendarPresent:status==="absent"?styles.calendarAbsent:{})}}>{day}</div>;
+                    })}
+                  </div>
+                </div>
+                <div style={styles.legendRow}><span>🟢 Present</span><span>🔴 Absent</span><span>⚪ No record</span></div>
               </div>
             )}
-          </div>
 
-          <div style={styles.card}>
-            <div style={styles.sectionTitleRow}><div><h2 style={{ margin: 0 }}>📝 My Test Results</h2><p style={styles.muted}>Your performance across all tests</p></div></div>
-            {tests.length === 0 ? <div style={styles.emptyBox}>No test results published yet.</div> : (
-              <div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Test</th><th style={styles.th}>Subject</th><th style={styles.th}>Date</th><th style={styles.th}>Marks</th><th style={styles.th}>Percentage</th></tr></thead><tbody>
-                {tests.map((test) => { const r = (test.results || {})[studentData?.studentId || ""]; const pct = r?.present && r?.marks != null ? (Number(r.marks) / Number(test.total || 1)) * 100 : null; return <tr key={test.id}><td style={styles.td}>{test.name}</td><td style={styles.td}>{test.subject}</td><td style={styles.td}>{test.date}</td><td style={styles.td}>{r?.present ? `${r.marks ?? "-"} / ${test.total}` : "Absent"}</td><td style={styles.td}>{pct == null ? "-" : `${pct.toFixed(1)}%`}</td></tr>; })}
-              </tbody></table></div>
+            {studentPage === "results" && (
+              <>
+                <div style={styles.card}>
+                  <div style={styles.sectionTitleRow}><div><h2>📝 Tests & Results</h2><p style={styles.muted}>All published tests for you. Test editing is available only to Admin.</p></div><div style={styles.rankBadge}>{myRank ? `#${myRank.rank}` : "—"}</div></div>
+                  <div style={styles.grid}>
+                    <StatCard title="Average" value={myAverage ? `${myAverage.toFixed(1)}%` : "—"} icon="📊" />
+                    <StatCard title="Tests" value={String(myTests.length)} icon="📝" />
+                    <StatCard title="Overall Rank" value={myRank ? `#${myRank.rank}` : "—"} icon="🏆" />
+                  </div>
+                  {tests.length === 0 ? <div style={styles.emptyBox}>No tests published yet.</div> : (
+                    <div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Test</th><th style={styles.th}>Class</th><th style={styles.th}>Subject</th><th style={styles.th}>Date</th><th style={styles.th}>Marks</th><th style={styles.th}>%</th><th style={styles.th}>Papers</th></tr></thead><tbody>
+                      {tests.filter(t=>!t.className || t.className===studentData?.className).map(test=>{ const r=(test.results||{})[studentSid]; const pct=r?.present&&r.marks!=null?(Number(r.marks)/Number(test.total||1))*100:null; return <tr key={test.id}><td style={styles.td}><strong>{test.name}</strong></td><td style={styles.td}>{test.className||"All"}</td><td style={styles.td}>{test.subject}</td><td style={styles.td}>{test.date}</td><td style={styles.td}>{r?.present?`${r.marks??"—"} / ${test.total}`:"Absent"}</td><td style={styles.td}>{pct==null?"—":`${pct.toFixed(1)}%`}</td><td style={styles.td}><div style={styles.linkRow}>{test.questionPaperUrl&&<a href={test.questionPaperUrl} target="_blank" rel="noreferrer" style={styles.linkButton}>📄 Question</a>}{test.answerSheetUrl&&<a href={test.answerSheetUrl} target="_blank" rel="noreferrer" style={styles.linkButton}>📝 Answer</a>}</div></td></tr>; })}
+                    </tbody></table></div>
+                  )}
+                </div>
+                <div style={styles.card}>
+                  <div style={styles.sectionTitleRow}><div><h2>🏆 Overall Ranking</h2><p style={styles.muted}>Ranking is calculated across all classes using average percentage.</p></div></div>
+                  {ranking.length===0?<div style={styles.emptyBox}>Ranking will appear after marks are entered.</div>:<div style={styles.topRankList}>{ranking.slice(0,10).map(item=><div key={item.studentId} style={{...styles.rankRow,...(item.studentId===studentSid?styles.rankRowCurrent:{})}}><strong>#{item.rank}</strong><span style={{flex:1}}>{item.name}</span><small>{item.className||"—"}</small><b>{item.computedAverage.toFixed(1)}%</b></div>)}</div>}
+                </div>
+              </>
             )}
-          </div>
 
-          <div style={styles.card}>
-            <div style={styles.sectionTitleRow}>
-              <div><h2 style={{ margin: 0 }}>🏆 Performance Position</h2><p style={styles.muted}>Your average is calculated from every test where marks are entered.</p></div>
-              <div style={styles.rankBadge}>{myRank ? `#${myRank.rank}` : "—"}</div>
-            </div>
-            {ranking.length === 0 ? <div style={styles.emptyBox}>Ranking will appear after marks are entered.</div> : (
-              <div style={styles.topRankList}>{ranking.slice(0,5).map(item=><div key={item.studentId} style={{...styles.rankRow,...(item.studentId===studentSid?styles.rankRowCurrent:{})}}><strong>#{item.rank}</strong><span style={{flex:1}}>{item.name}</span><small>{item.className||"—"}</small><b>{item.computedAverage.toFixed(1)}%</b></div>)}</div>
+            {studentPage === "homework" && (
+              <div style={styles.card}>
+                <div style={styles.sectionTitleRow}><div><h2>📚 My Homework</h2><p style={styles.muted}>Your assigned work and completion status.</p></div><div style={styles.rankBadge}>{pendingHomework.length} pending</div></div>
+                {myHomework.length===0?<div style={styles.emptyBox}>No homework assigned to your class yet.</div>:myHomework.map(item=>{const done=Boolean(((item as any).completion||{})[studentSid]);return <div key={item.id} style={styles.homeworkItem}><div style={styles.homeworkMeta}><strong>{item.subject||"Homework"} · {item.title}</strong><span>{item.day||""}, {item.homeworkDate||""}</span></div><p style={{margin:"6px 0",whiteSpace:"pre-wrap"}}>{item.description}</p><small style={styles.muted}>Due: {item.dueDate||"No due date"}</small><div style={{marginTop:10}}><span style={done?styles.doneBadge:styles.pendingBadge}>{done?"✓ Homework Done":"⚠ Homework Not Done"}</span></div></div>})}
+                {pendingHomework.length>0 && <div style={styles.warningBox}><strong>⚠ Pending Work</strong><p style={{margin:"5px 0 0"}}>{pendingHomework.length} homework item(s) still need completion.</p></div>}
+              </div>
             )}
-          </div>
-        </main>
+
+            {studentPage === "fees" && (
+              <div style={styles.card}>
+                <div style={styles.sectionTitleRow}><div><h2>💰 Fee Centre</h2><p style={styles.muted}>Month-by-month fee status and payment history.</p></div><div style={styles.rankBadge}>{studentFee?.status==="paid"?"PAID":`₹${studentFee?.pendingAmount??0} DUE`}</div></div>
+                <div style={styles.feeHistoryGrid}>
+                  <div><span style={styles.smallLabel}>Current Month</span><strong>{studentFee?.monthId || new Date().toISOString().slice(0,7)}</strong></div>
+                  <div><span style={styles.smallLabel}>Monthly Fee</span><strong>₹{studentFee?.monthlyFee??studentData?.monthlyFee??0}</strong></div>
+                  <div><span style={styles.smallLabel}>Paid</span><strong>₹{studentFee?.paidAmount??0}</strong></div>
+                  <div><span style={styles.smallLabel}>Due</span><strong>₹{studentFee?.pendingAmount??0}</strong></div>
+                </div>
+                <h3>📜 Payment History</h3>
+                {studentFeeHistory.length===0?<div style={styles.emptyBox}>No fee history available.</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Month</th><th style={styles.th}>Fee</th><th style={styles.th}>Paid</th><th style={styles.th}>Due</th><th style={styles.th}>Status</th><th style={styles.th}>Payment Date(s)</th></tr></thead><tbody>{studentFeeHistory.map(f=> <tr key={f.id}><td style={styles.td}>{f.monthId||"-"}</td><td style={styles.td}>₹{f.monthlyFee||0}</td><td style={styles.td}>₹{f.paidAmount||0}</td><td style={styles.td}>₹{f.pendingAmount||0}</td><td style={styles.td}><span style={f.status==="paid"?styles.paidBadge:f.status==="partial"?styles.partialBadge:styles.pendingBadge}>{f.status==="paid"?"🟢 Paid":f.status==="partial"?"🟠 Partial":"🔴 Due"}</span></td><td style={styles.td}>{(f.paymentHistory||[]).map((p,i)=><div key={i}>{p.date}{p.method?` · ${p.method}`:""} · ₹{p.amount}</div>)}</td></tr>)}</tbody></table></div>}
+              </div>
+            )}
+
+            {studentPage === "notices" && (
+              <div style={styles.card}>
+                <div style={styles.sectionTitleRow}><div><h2>📢 Notice Board</h2><p style={styles.muted}>Official announcements from the coaching centre.</p></div></div>
+                {notices.length===0?<div style={styles.emptyBox}>No notices published yet.</div>:notices.map(n=><div key={n.id} style={styles.noticeItem}><div style={styles.homeworkMeta}><strong>{n.title}</strong><span>{n.date}</span></div><span style={styles.noticeBadge}>{(n.priority||"normal").toUpperCase()}</span><p style={{whiteSpace:"pre-wrap",margin:"9px 0 0"}}>{n.message}</p></div>)}
+              </div>
+            )}
+
+            {studentPage === "director" && (
+              <div style={styles.card}>
+                <div style={styles.sectionTitleRow}><div><h2>🎓 Coaching Director</h2><p style={styles.muted}>Official director information.</p></div></div>
+                {director?<div style={styles.directorCard}><div style={styles.avatarDirector}>{director.photoUrl?<img src={director.photoUrl} alt="Director" style={styles.avatarImage}/>: "🎓"}</div><div><h2 style={{margin:"0 0 4px"}}>{director.name||"Director"}</h2><p style={styles.muted}>{director.title||"Director"}</p>{director.mobile&&<div>📞 {director.mobile}</div>}{director.email&&<div>✉️ {director.email}</div>}{director.address&&<div>📍 {director.address}</div>}{director.message&&<div style={styles.infoNotice}>💬 {director.message}</div>}</div></div>:<div style={styles.emptyBox}>Director details have not been published yet.</div>}
+              </div>
+            )}
+          </main>
+        </div>
       </div>
     );
   }
@@ -2172,14 +2220,6 @@ export default function App() {
                 />
 
                 <FormField
-                  label="Average %"
-                  value={editAverage}
-                  onChange={setEditAverage}
-                  placeholder="0"
-                  type="number"
-                />
-
-                <FormField
                   label="Monthly Fee ₹"
                   value={editStudentMonthlyFee}
                   onChange={setEditStudentMonthlyFee}
@@ -2300,14 +2340,6 @@ export default function App() {
                 />
 
                 <FormField
-                  label="Average %"
-                  value={average}
-                  onChange={setAverage}
-                  placeholder="0"
-                  type="number"
-                />
-
-                <FormField
                   label="Monthly Fee ₹"
                   value={monthlyFee}
                   onChange={setMonthlyFee}
@@ -2418,7 +2450,6 @@ export default function App() {
 
                     <th style={styles.th}>Attendance</th>
 
-                    <th style={styles.th}>Average</th>
 
                     <th style={styles.th}>Monthly Fee</th>
 
@@ -2441,7 +2472,6 @@ export default function App() {
 
                       <td style={styles.td}>{student.attendance ?? 0}%</td>
 
-                      <td style={styles.td}>{student.average ?? 0}%</td>
 
                       <td style={styles.td}>
                         ₹{student.monthlyFee ?? student.feeDue ?? 0}
@@ -3522,6 +3552,20 @@ function FormField({
 const styles: {
   [key: string]: React.CSSProperties;
 } = {
+  studentTopbar:{display:"flex",alignItems:"center",justifyContent:"space-between",gap:16,padding:"14px 24px",background:"linear-gradient(135deg,#020617,#0f172a 55%,#1d4ed8)",color:"#fff",position:"sticky",top:0,zIndex:20,boxShadow:"0 8px 30px rgba(2,6,23,.18)"},
+  studentShell:{display:"grid",gridTemplateColumns:"250px minmax(0,1fr)",minHeight:"calc(100vh - 76px)"},
+  studentSidebar:{padding:"22px 14px",background:"rgba(255,255,255,.94)",borderRight:"1px solid #dbe4f0",backdropFilter:"blur(16px)",position:"sticky",top:76,height:"calc(100vh - 76px)",boxSizing:"border-box"},
+  studentNavLabel:{fontSize:11,fontWeight:800,letterSpacing:".12em",color:"#64748b",padding:"8px 12px 12px"},
+  studentNav:{width:"100%",border:0,background:"transparent",display:"flex",gap:12,alignItems:"center",textAlign:"left",padding:"12px 14px",borderRadius:13,margin:"4px 0",cursor:"pointer",fontWeight:700,color:"#475569"},
+  studentNavActive:{width:"100%",border:0,display:"flex",gap:12,alignItems:"center",textAlign:"left",padding:"12px 14px",borderRadius:13,margin:"4px 0",cursor:"pointer",fontWeight:800,background:"linear-gradient(135deg,#eff6ff,#dbeafe)",color:"#1d4ed8",boxShadow:"inset 3px 0 0 #2563eb"},
+  studentSideCard:{margin:"22px 4px 0",padding:15,borderRadius:16,background:"linear-gradient(145deg,#020617,#172554)",color:"#fff",boxShadow:"0 12px 28px rgba(15,23,42,.16)"},
+  studentMain:{padding:28,minWidth:0,maxWidth:1500,width:"100%",boxSizing:"border-box",margin:"0 auto",background:"radial-gradient(circle at 10% 10%,rgba(37,99,235,.07),transparent 25%),radial-gradient(circle at 90% 20%,rgba(14,165,233,.06),transparent 25%),#f6f8fc"},
+  studentPageHeader:{display:"flex",justifyContent:"space-between",alignItems:"center",gap:20,marginBottom:22},
+  studentHeaderRank:{background:"#fff",border:"1px solid #dbe4f0",padding:"12px 18px",borderRadius:16,textAlign:"right",boxShadow:"0 8px 24px rgba(15,23,42,.06)"},
+  studentHero:{position:"relative",overflow:"hidden",display:"flex",justifyContent:"space-between",alignItems:"center",padding:30,borderRadius:24,color:"#fff",marginBottom:20,background:"linear-gradient(135deg,#020617,#172554 46%,#2563eb)",boxShadow:"0 22px 50px rgba(30,64,175,.20)"},
+  heroAvatar:{width:82,height:82,borderRadius:24,background:"rgba(255,255,255,.16)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:34,overflow:"hidden",border:"1px solid rgba(255,255,255,.25)"},
+  quickList:{display:"grid",gap:9},
+  quickItem:{border:"1px solid #e2e8f0",background:"#fff",borderRadius:13,padding:"13px 15px",display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",color:"#0f172a",textAlign:"left"},
   centerPage:{minHeight:"100vh",display:"flex",justifyContent:"center",alignItems:"center",background:"linear-gradient(135deg,#eef2ff,#f8fafc 48%,#e0e7ff)",fontFamily:"Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"},
   loadingCard:{background:"#fff",padding:42,borderRadius:24,textAlign:"center",boxShadow:"0 24px 70px rgba(15,23,42,.12)",border:"1px solid #e2e8f0"},
   loginPage:{minHeight:"100vh",display:"flex",justifyContent:"center",alignItems:"center",padding:24,background:"radial-gradient(circle at 12% 10%,#dbeafe 0,#eef2ff 28%,#f8fafc 65%,#e0e7ff 100%)",fontFamily:"Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"},
