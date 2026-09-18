@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { onAuthStateChanged } from "firebase/auth";
 import { doc, setDoc, updateDoc, getDocs, collection, query, orderBy, deleteDoc } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
+import { FIREBASE_STORAGE_BUCKET } from "../firebase/config";
 
 import auth, {
   loginUser,
@@ -636,7 +637,14 @@ export default function App() {
         gender: profileDraft.gender || "",
         photoUrl,
       };
-      await updateDoc(doc(db, "students", studentData.studentId), allowed);
+      await setDoc(doc(db, "students", studentData.studentId), allowed, { merge: true });
+      await setDoc(doc(db, "studentDirectory", studentData.studentId), {
+        studentId: studentData.studentId,
+        name: allowed.name,
+        className: studentData.className || "",
+        batch: studentData.batch || "",
+        photoUrl: allowed.photoUrl || "",
+      }, { merge: true });
       const updated = await getStudentById(studentData.studentId);
       setStudentData(updated);
       setProfileMessage("Profile updated successfully! ✅");
@@ -656,7 +664,17 @@ export default function App() {
     try {
       let photoUrl = directorForm.photoUrl || "";
       if (directorPhotoFile) photoUrl = await uploadAcademicFile(directorPhotoFile, "director/profile");
-      const payload = { ...directorForm, name: (directorForm.name || "").trim(), title: (directorForm.title || "Director").trim(), photoUrl, updatedAt: new Date().toISOString() };
+      const payload = {
+        ...directorForm,
+        name: (directorForm.name || "").trim(),
+        title: (directorForm.title || "Director").trim(),
+        mobile: (directorForm.mobile || "").trim(),
+        email: (directorForm.email || "").trim(),
+        address: (directorForm.address || "").trim(),
+        message: (directorForm.message || "").trim(),
+        photoUrl,
+        updatedAt: new Date().toISOString(),
+      };
       await setDoc(doc(db, "director", "profile"), payload, { merge: true });
       setDirector(payload);
       setDirectorForm(payload);
@@ -1278,12 +1296,13 @@ export default function App() {
     if (file.size > maxBytes) {
       throw new Error(`File is too large. Maximum size is ${allowedImages ? "5 MB" : "15 MB"}.`);
     }
-    const storage = getStorage();
+    const storage = getStorage(undefined, FIREBASE_STORAGE_BUCKET);
     const safeName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
     const fileRef = storageRef(storage, `${folder}/${safeName}`);
+    if (!user?.uid) throw new Error("You must be signed in before uploading a file.");
     await uploadBytes(fileRef, file, {
       contentType: file.type || "application/octet-stream",
-      customMetadata: { uploadedBy: user?.uid || "authenticated-user" },
+      customMetadata: { uploadedBy: user.uid },
     });
     const url = await getDownloadURL(fileRef);
     if (!url) throw new Error("Upload completed but no download URL was returned.");
