@@ -171,12 +171,15 @@ type Teacher = {
 export default function App() {
   const [user, setUser] = useState<any>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
-
-  const isAdmin = profile?.role === "admin";
-  const isCR = profile?.role === "cr";
-  const isStudentLike = profile?.role === "student" || profile?.role === "cr";
-
   const [studentData, setStudentData] = useState<Student | null>(null);
+
+  const normalizedRole = String(profile?.role || "").trim().toLowerCase();
+  // CR status is intentionally checked from both the login role and the
+  // student record. This keeps an assigned CR's portal available even if
+  // an older account still has the student role cached.
+  const isAdmin = normalizedRole === "admin";
+  const isCR = normalizedRole === "cr" || studentData?.isCR === true;
+  const isStudentLike = normalizedRole === "student" || normalizedRole === "cr" || isCR;
 
   const [students, setStudents] = useState<Student[]>([]);
   const [directoryStudents, setDirectoryStudents] = useState<Student[]>([]);
@@ -779,11 +782,15 @@ export default function App() {
       try {
         const userProfile = await getUserProfile(currentUser.uid);
 
-        setProfile(userProfile);
+        const normalizedProfile = userProfile
+          ? { ...userProfile, role: String(userProfile.role || "").trim().toLowerCase() }
+          : null;
+
+        setProfile(normalizedProfile);
         await loadCrCriteria();
 
-        if (userProfile?.role === "student" || userProfile?.role === "cr") {
-          const ownStudent = await getStudentById(userProfile.studentId);
+        if (normalizedProfile?.studentId && ["student", "cr"].includes(normalizedProfile.role)) {
+          const ownStudent = await getStudentById(normalizedProfile.studentId);
 
           setStudentData(ownStudent);
           setProfileDraft(ownStudent || {});
@@ -793,11 +800,11 @@ export default function App() {
           // to create the current-month fee here, but Firestore correctly
           // reserves fee writes for Admin. That denied write was unnecessary
           // during login and could make the portal appear broken.
-          const ownFee = await getFeeByStudentId(userProfile.studentId);
+          const ownFee = await getFeeByStudentId(normalizedProfile.studentId);
           setStudentFee(ownFee);
 
           const ownFeeHistory = await getStudentFeeHistory(
-            userProfile.studentId
+            normalizedProfile.studentId
           );
 
           setStudentFeeHistory(ownFeeHistory);
@@ -2089,7 +2096,7 @@ export default function App() {
 
         <div style={styles.studentShell}>
           <aside style={styles.studentSidebar}>
-            <div style={styles.studentNavLabel}>STUDENT PORTAL</div>
+            <div style={styles.studentNavLabel}>{isCR ? "CLASS REPRESENTATIVE PORTAL" : "STUDENT PORTAL"}</div>
             {(isCR ? [
               ["dashboard", "🏠", "Dashboard"],
               ["profile", "👤", "My Profile"],
