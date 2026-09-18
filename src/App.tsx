@@ -3755,52 +3755,116 @@ export default function App() {
   const feesPage = () => {
     const currentMonth = getBillingMonthId();
     const monthlyRecords = fees.filter((f) => f.isPreviousDue !== true);
+    const currentRecords = monthlyRecords.filter((f) => f.monthId === currentMonth);
     const currentSummary = summarizeFeeRecords(monthlyRecords, currentMonth);
-    const allPaid = fees.reduce((sum, fee) => sum + Number(fee.paidAmount || 0), 0);
-    const allRemaining = fees.reduce((sum, fee) => sum + Number(fee.pendingAmount || 0), 0);
-    const paymentRows = monthlyRecords.flatMap((fee) => {
-      const student = students.find((item) => item.studentId === fee.studentId);
-      return (fee.paymentHistory || []).map((payment, index) => ({ student, fee, payment, index }));
-    }).filter((row) => row.student);
-    paymentRows.sort((a, b) => String(b.payment.date || "").localeCompare(String(a.payment.date || "")));
-    const reportSummary = summarizeFeeRecords(monthlyRecords, feeReportMonth);
+    const totalCollected = fees.reduce((sum, fee) => sum + Number(fee.paidAmount || 0), 0);
+    const totalRemaining = fees.reduce((sum, fee) => sum + Number(fee.pendingAmount || 0), 0);
+    const paymentCount = monthlyRecords.reduce((sum, fee) => sum + (fee.paymentHistory || []).length, 0);
+
     return <>
       <div style={styles.feePremiumHero}>
-        <div><span style={styles.heroEyebrow}>FINANCE · ADMIN</span><h1>💰 Fee Management</h1><p>Class tuition, monthly collection and student payments in one clean workspace.</p></div>
-        <div style={styles.feeHeroActions}><button style={styles.secondaryButton} onClick={() => { setPage("feeClassTuition"); loadClassTuition(); }}>🏫 Tuition Setup</button><button style={styles.primaryButtonSmall} onClick={loadFees} disabled={feeLoading}>{feeLoading ? "Refreshing..." : "↻ Refresh"}</button></div>
+        <div>
+          <span style={styles.heroEyebrow}>ADMIN · FEES</span>
+          <h1 style={{marginBottom:6}}>💰 Fee Management</h1>
+          <p style={{margin:0,opacity:.82}}>Simple monthly tuition, payments and dues. Nothing unnecessary.</p>
+        </div>
+        <div style={styles.feeHeroActions}>
+          <button style={styles.secondaryButton} onClick={() => { setPage('feeClassTuition'); loadClassTuition(); }}>🏫 Class Tuition</button>
+          <button style={styles.primaryButtonSmall} onClick={loadFees} disabled={feeLoading}>{feeLoading ? 'Loading…' : '↻ Refresh'}</button>
+        </div>
       </div>
-      {feeMessage && <div style={feeMessage.includes("successfully") || feeMessage.includes("recalculated") ? styles.successBox : styles.errorBox}>{feeMessage}</div>}
+
+      {feeMessage && <div style={feeMessage.includes('successfully') || feeMessage.includes('recalculated') || feeMessage.includes('reset') ? styles.successBox : styles.errorBox}>{feeMessage}</div>}
 
       <div style={styles.feeMetricGrid}>
-        <div style={styles.feeMetricCard}><span>💳</span><small>Total Money Collected</small><strong>₹{allPaid.toLocaleString("en-IN")}</strong><em>All recorded payments</em></div>
-        <div style={styles.feeMetricCard}><span>🟠</span><small>Fee Dues</small><strong>₹{monthlyRecords.reduce((s,f)=>s+Number(f.monthlyFee||0),0).toLocaleString("en-IN")}</strong><em>Monthly tuition charged</em></div>
-        <div style={styles.feeMetricCard}><span>🔴</span><small>Remaining</small><strong>₹{allRemaining.toLocaleString("en-IN")}</strong><em>Unpaid balance</em></div>
-        <div style={styles.feeMetricCard}><span>📅</span><small>This Month</small><strong>₹{currentSummary.paid.toLocaleString("en-IN")}</strong><em>{currentMonth} collected</em></div>
+        <div style={styles.feeMetricCard}><span>💳</span><small>Total Paid</small><strong>₹{totalCollected.toLocaleString('en-IN')}</strong><em>All recorded payments</em></div>
+        <div style={styles.feeMetricCard}><span>🟠</span><small>Current Month Due</small><strong>₹{currentSummary.dues.toLocaleString('en-IN')}</strong><em>{currentMonth} tuition</em></div>
+        <div style={styles.feeMetricCard}><span>🔴</span><small>Remaining</small><strong>₹{totalRemaining.toLocaleString('en-IN')}</strong><em>Unpaid balance</em></div>
+        <div style={styles.feeMetricCard}><span>📜</span><small>Payments</small><strong>{paymentCount}</strong><em>Recorded transactions</em></div>
       </div>
 
       <div style={styles.feeDashboardGrid}>
         <div style={styles.card}>
-          <div style={styles.sectionTitleRow}><div><h2>📊 Collection Overview</h2><p style={styles.muted}>Current month collection against monthly tuition dues.</p></div><strong>{currentSummary.dues ? `${Math.round((currentSummary.paid/currentSummary.dues)*100)}%` : "0%"}</strong></div>
-          <div style={styles.progressTrack}><div style={{...styles.progressFill,width:`${currentSummary.dues ? Math.min(100,(currentSummary.paid/currentSummary.dues)*100) : 0}%`}}/></div>
-          <div style={styles.feeOverviewNumbers}><span>Collected <b>₹{currentSummary.paid.toLocaleString("en-IN")}</b></span><span>Due <b>₹{currentSummary.dues.toLocaleString("en-IN")}</b></span><span>Remaining <b>₹{currentSummary.remaining.toLocaleString("en-IN")}</b></span></div>
+          <div style={styles.sectionTitleRow}>
+            <div><h2 style={{marginBottom:4}}>📊 This Month</h2><p style={styles.muted}>Collected vs. current monthly tuition.</p></div>
+            <strong>{currentSummary.dues ? `${Math.round((currentSummary.paid / currentSummary.dues) * 100)}%` : '0%'}</strong>
+          </div>
+          <div style={styles.progressTrack}><div style={{...styles.progressFill,width:`${currentSummary.dues ? Math.min(100,(currentSummary.paid/currentSummary.dues)*100) : 0}%`}} /></div>
+          <div style={styles.feeOverviewNumbers}>
+            <span>Paid <b>₹{currentSummary.paid.toLocaleString('en-IN')}</b></span>
+            <span>Due <b>₹{currentSummary.dues.toLocaleString('en-IN')}</b></span>
+            <span>Remaining <b>₹{currentSummary.remaining.toLocaleString('en-IN')}</b></span>
+          </div>
         </div>
+
         <div style={styles.card}>
-          <div className="sectionTitleRow" style={styles.sectionTitleRow}><div><h2>📅 Monthly Report</h2><p style={styles.muted}>Choose a month for a quick financial snapshot.</p></div><select style={styles.premiumSelectSmall} value={feeReportMonth} onChange={e=>setFeeReportMonth(e.target.value)}><option value={currentMonth}>{currentMonth}</option>{Array.from(new Set(monthlyRecords.map(f=>f.monthId).filter(Boolean))).sort().reverse().filter(m=>m!==currentMonth).map(m=><option key={m} value={m}>{m}</option>)}</select></div>
-          <div style={styles.reportMiniGrid}><div><small>Fee Due</small><strong>₹{reportSummary.dues.toLocaleString("en-IN")}</strong></div><div><small>Paid</small><strong>₹{reportSummary.paid.toLocaleString("en-IN")}</strong></div><div><small>Remaining</small><strong>₹{reportSummary.remaining.toLocaleString("en-IN")}</strong></div><div><small>Paid Students</small><strong>{reportSummary.fullyPaid}</strong></div></div>
+          <div style={styles.sectionTitleRow}><div><h2 style={{marginBottom:4}}>⚡ Quick Actions</h2><p style={styles.muted}>Open the exact page you need.</p></div></div>
+          <div style={styles.quickGrid}>
+            <button style={styles.quickAction} onClick={() => { setPage('feeClassTuition'); loadClassTuition(); }}>🏫 <strong>Set Class Tuition</strong><small style={styles.muted}>Monthly amount for each class</small></button>
+            <button style={styles.quickAction} onClick={() => setPage('feePaymentHistory')}>📜 <strong>Payment History</strong><small style={styles.muted}>View, edit or delete payments</small></button>
+          </div>
         </div>
       </div>
 
       <div style={styles.card}>
-        <div style={styles.sectionTitleRow}><div><h2>👨‍🎓 Student Fees</h2><p style={styles.muted}>Select a student to open their month-wise fee ledger.</p></div><strong>{students.length} students</strong></div>
-        {students.length === 0 ? <div style={styles.emptyBox}>No students found.</div> : <div style={styles.feeStudentGrid}>{students.map((student) => { const studentFees=fees.filter(f=>f.studentId===student.studentId); const remaining=studentFees.reduce((s,f)=>s+Number(f.pendingAmount||0),0); const paid=studentFees.reduce((s,f)=>s+Number(f.paidAmount||0),0); return <button key={student.studentId || student.id} type="button" style={styles.feeStudentCard} onClick={()=>openFeeHistory(student)}><span style={styles.feeAvatar}>{(student.name||"?").trim().charAt(0).toUpperCase()}</span><div><strong>{student.name || "Unnamed student"}</strong><small>{student.studentId} · {student.className || "Class not set"}</small><small>Paid ₹{paid.toLocaleString("en-IN")} · Remaining ₹{remaining.toLocaleString("en-IN")}</small></div><span style={remaining>0?styles.pendingBadge:styles.paidBadge}>{remaining>0?`₹${remaining.toLocaleString("en-IN")}`:"Paid"}</span></button>; })}</div>}
+        <div style={styles.sectionTitleRow}>
+          <div><h2 style={{marginBottom:4}}>👨‍🎓 Students</h2><p style={styles.muted}>Click a student. Their complete fee account opens on a separate page.</p></div>
+          <span style={styles.noticeBadge}>{students.length} students</span>
+        </div>
+        {students.length === 0 ? <div style={styles.emptyBox}>No students found.</div> :
+          <div style={styles.feeStudentGrid}>
+            {students.filter((s) => s.studentId).map((student) => {
+              const studentFees = fees.filter((f) => f.studentId === student.studentId);
+              const current = currentRecords.find((f) => f.studentId === student.studentId);
+              const remaining = studentFees.reduce((sum, f) => sum + Number(f.pendingAmount || 0), 0);
+              const paid = studentFees.reduce((sum, f) => sum + Number(f.paidAmount || 0), 0);
+              const monthly = current?.monthlyFee ?? classTuitionFees.find((x:any) => x.className === student.className)?.monthlyFee ?? 0;
+              const status = current ? getMonthlyFeeStatus(Number(current.monthlyFee || 0), Number(current.pendingAmount || 0), Number(current.paidAmount || 0)) : 'pending';
+              return <button key={student.studentId} type="button" style={styles.feeStudentCard} onClick={() => openFeeHistory(student)}>
+                <span style={styles.feeAvatar}>{(student.name || '?').trim().charAt(0).toUpperCase()}</span>
+                <div>
+                  <strong>{student.name || 'Unnamed student'}</strong>
+                  <small>{student.studentId} · {student.className || 'Class not set'}</small>
+                  <small>Monthly tuition: ₹{Number(monthly).toLocaleString('en-IN')}</small>
+                  <small>Paid: ₹{paid.toLocaleString('en-IN')} · Remaining: ₹{remaining.toLocaleString('en-IN')}</small>
+                </div>
+                <span style={status === 'paid' ? styles.paidBadge : styles.pendingBadge}>{status === 'paid' ? '✓ Paid' : current ? `₹${Number(current.pendingAmount || 0).toLocaleString('en-IN')} Due` : 'Not Set'}</span>
+              </button>;
+            })}
+          </div>
+        }
       </div>
 
       <div style={styles.card}>
-        <div style={styles.sectionTitleRow}><div><h2>📜 Payment History</h2><p style={styles.muted}>Edit or delete any payment from its dedicated page.</p></div><button style={styles.secondaryButton} onClick={()=>setPage("feePaymentHistory")}>View All →</button></div>
-        {paymentRows.length===0?<div style={styles.emptyBox}>No payments recorded yet.</div>:<div style={styles.simpleFeeList}>{paymentRows.slice(0,5).map(row=><div key={`${row.student!.studentId}-${row.fee.monthId}-${row.index}`} style={styles.paymentHistoryCard}><div><strong>{row.student!.name}</strong><span style={styles.muted}>{row.fee.monthId} · {row.payment.method||"Cash"}</span></div><strong>₹{Number(row.payment.amount||0).toLocaleString("en-IN")}</strong><div style={styles.linkRow}><button style={styles.editButton} onClick={()=>openEditFeePayment(row.student!,row.fee,row.index)}>✏️ Edit</button><button style={styles.deleteButton} onClick={()=>openDeleteFeePayment(row.student!,row.fee,row.index)}>🗑️ Delete</button></div></div>)}</div>}
+        <div style={styles.sectionTitleRow}>
+          <div><h2 style={{marginBottom:4}}>📅 Monthly Report</h2><p style={styles.muted}>Month-wise due, paid and remaining amounts.</p></div>
+          <select style={styles.premiumSelectSmall} value={feeReportMonth} onChange={e => setFeeReportMonth(e.target.value)}>
+            <option value={currentMonth}>{currentMonth}</option>
+            {Array.from(new Set(monthlyRecords.map(f => f.monthId).filter(Boolean))).sort().reverse().filter(m => m !== currentMonth).map(m => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </div>
+        {(() => {
+          const report = summarizeFeeRecords(monthlyRecords, feeReportMonth);
+          return <>
+            <div style={styles.reportMiniGrid}>
+              <div><small>Fee Due</small><strong>₹{report.dues.toLocaleString('en-IN')}</strong></div>
+              <div><small>Fee Paid</small><strong>₹{report.paid.toLocaleString('en-IN')}</strong></div>
+              <div><small>Remaining</small><strong>₹{report.remaining.toLocaleString('en-IN')}</strong></div>
+              <div><small>Fully Paid</small><strong>{report.fullyPaid}</strong></div>
+            </div>
+            <div style={{marginTop:14}} className="fee-report-note">{report.students ? `${report.students} student fee records in ${feeReportMonth}.` : `No fee records for ${feeReportMonth}.`}</div>
+          </>;
+        })()}
       </div>
 
-      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>⚙️ Fee Data Control</h2><p style={styles.muted}>Use this only when starting the fee module from scratch. Students and all non-fee data stay safe.</p></div><button style={styles.deleteButton} disabled={feeResetting} onClick={resetFeeRecords}>{feeResetting?"Resetting...":"🗑️ Reset All Fee Records"}</button></div></div>
+      <div style={styles.card}>
+        <div style={styles.sectionTitleRow}>
+          <div><h2 style={{marginBottom:4}}>🧹 Start Fee Section Fresh</h2><p style={styles.muted}>Use this once if you want to remove old fee data before entering the real class tuition.</p></div>
+          <button style={styles.deleteButton} disabled={feeResetting} onClick={resetFeeRecords}>{feeResetting ? 'Clearing…' : 'Clear All Fee Data'}</button>
+        </div>
+        <div style={styles.infoNotice}>This clears fee records, previous dues, payments and class tuition settings only. Students, teachers, tests, attendance and homework are not deleted.</div>
+      </div>
+
     </>;
   };
 

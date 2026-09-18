@@ -129,3 +129,8 @@ radial-gradient(circle at 90% 20%,rgba(14,165,233,.08),transparent 24%),#f6f8fc}
 .previousDueRow,.paymentHistoryCard{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:14px;align-items:center;border:1px solid #e2e8f0;background:#fff;border-radius:14px;padding:14px 16px}
 .previousDueRow>div,.paymentHistoryCard>div:first-child{display:flex;flex-direction:column;gap:5px}
 @media(max-width:700px){.studentFeeLink,.monthFeeLink,.previousDueRow,.paymentHistoryCard{grid-template-columns:1fr}.monthFeeLink>div:nth-child(2){justify-content:flex-start}.studentFeeLink>div:nth-child(2){align-items:flex-start}.previousDueRow .linkRow,.paymentHistoryCard .linkRow{justify-content:flex-start}.appPage .quickGrid{grid-template-columns:1fr!important}}
+
+/* Fee dashboard: compact and mobile-first */
+.fee-report-note{padding:10px 12px;border:1px dashed #dbe3ee;border-radius:10px;background:#f8fafc;color:#64748b;font-size:12px}
+@media(max-width:900px){.feeMetricGrid,.feeDashboardGrid{grid-template-columns:1fr!important}.feeStudentGrid{grid-template-columns:1fr!important}.feePremiumHero{align-items:flex-start!important;flex-direction:column!important}.feeHeroActions{width:100%;display:flex;flex-wrap:wrap}.feeHeroActions button{flex:1;min-width:140px}}
+@media(max-width:560px){.feeMetricGrid{grid-template-columns:1fr!important}.feeStudentCard{grid-template-columns:42px 1fr!important}.feeStudentCard>span:last-child{grid-column:2;justify-self:start}.feeHeroActions button{width:100%;flex:1 1 100%}}
