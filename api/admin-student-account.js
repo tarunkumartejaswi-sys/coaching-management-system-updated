@@ -1,3 +1,5 @@
+export const config = { runtime: "nodejs20.x" };
+
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
