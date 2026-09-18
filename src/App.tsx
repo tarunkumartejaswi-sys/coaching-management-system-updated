@@ -809,7 +809,18 @@ export default function App() {
 
           setStudentFeeHistory(ownFeeHistory);
           const directorySnapshot = await getDocs(collection(db, "studentDirectory"));
-          setDirectoryStudents(directorySnapshot.docs.map((item: any) => ({ id: item.id, ...item.data() })) as Student[]);
+          const directoryRows = directorySnapshot.docs.map((item: any) => ({ id: item.id, ...item.data() })) as Student[];
+          setDirectoryStudents(directoryRows);
+
+          // A CR needs the same student roster used by the Admin attendance
+          // and homework screens. Normal students must remain restricted to
+          // their own record, so only an assigned CR loads the full roster.
+          if (normalizedProfile.role === "cr" || ownStudent?.isCR === true) {
+            const allStudents = await getStudents();
+            setStudents(allStudents);
+            setDirectoryStudents(allStudents);
+          }
+
           setHomework(await getHomework());
         } else {
           await loadDirector();
@@ -2232,27 +2243,78 @@ export default function App() {
             )}
 
             {studentPage === "attendance" && (
-              <div style={styles.card}>
-                <div style={styles.sectionTitleRow}><div><h2>📅 My Attendance</h2><p style={styles.muted}>The percentage and calendar below are calculated from the same daily attendance records.</p></div></div>
-                <div style={styles.feeHistoryGrid}>
-                  <div><span style={styles.smallLabel}>Present</span><strong>{presentDays}</strong></div>
-                  <div><span style={styles.smallLabel}>Absent</span><strong>{absentDays}</strong></div>
-                  <div><span style={styles.smallLabel}>Attendance</span><strong>{attendancePct.toFixed(0)}%</strong></div>
-                  <div><span style={styles.smallLabel}>Recorded Days</span><strong>{recordedAttendance.length}</strong></div>
-                </div>
-                <div style={styles.calendarCard}>
-                  <div style={styles.calendarToolbar}><h3 style={{margin:0}}>{new Date(monthAttendance.y, monthAttendance.m, 1).toLocaleDateString("en-IN",{month:"long",year:"numeric"})}</h3><input style={styles.monthInput} type="month" value={studentCalendarMonth} onChange={e=>setStudentCalendarMonth(e.target.value)} /></div>
-                  <div style={styles.calendarGrid}>
-                    {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d=><div key={d} style={styles.calendarHead}>{d}</div>)}
-                    {Array.from({length:monthAttendance.first}).map((_,i)=><div key={"e"+i}/>)}
-                    {Array.from({length:monthAttendance.days},(_,i)=>i+1).map(day=>{
-                      const status=monthAttendance.map[day];
-                      return <div key={day} title={status ? `${day}: ${status}` : `${day}: No record`} style={{...styles.calendarDay,...(status==="present"?styles.calendarPresent:status==="absent"?styles.calendarAbsent:{})}}>{day}</div>;
-                    })}
+              isCR ? (
+                <div>
+                  <div style={styles.pageHeader}>
+                    <div>
+                      <h1>📅 Attendance Management</h1>
+                      <p style={styles.muted}>Manage the full student attendance register. Every CR change is sent to Admin for approval before it becomes official.</p>
+                    </div>
+                    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                      <button style={styles.secondaryButton} onClick={()=>loadAttendance()}>🔄 Refresh</button>
+                      <button style={styles.secondaryButton} onClick={()=>setAllAttendance("present")}>✓ Mark All Present</button>
+                      <button style={styles.secondaryButton} onClick={()=>setAllAttendance("absent")}>✕ Mark All Absent</button>
+                      <button style={styles.primaryButtonSmall} onClick={saveAttendance}>⏳ Submit for Admin Approval</button>
+                    </div>
+                  </div>
+                  {attendanceMessage && <div style={attendanceMessage.includes("sent") || attendanceMessage.includes("success") ? styles.infoNotice : styles.errorBox}>{attendanceMessage}</div>}
+                  <div style={styles.card}>
+                    <div style={styles.formGrid}>
+                      <FormField label="Attendance Date" value={attendanceDate} onChange={(v)=>{setAttendanceDate(v);const row=attendanceDays.find(a=>a.date===v);setAttendanceRecords(row?.records||{});}} type="date" />
+                    </div>
+                    {attendanceLoading ? <div style={styles.emptyBox}>Loading attendance...</div> : (
+                      <div style={styles.tableWrapper}>
+                        <table style={styles.table}>
+                          <thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Batch</th><th style={styles.th}>Current Status</th></tr></thead>
+                          <tbody>
+                            {students.filter(s=>s.studentId).map(s=>{
+                              const present = (attendanceRecords[s.studentId!] || "absent") === "present";
+                              return <tr key={s.studentId}>
+                                <td style={styles.td}><strong>{s.name}</strong><div style={styles.muted}>{s.studentId}</div></td>
+                                <td style={styles.td}>{s.className || "—"}</td>
+                                <td style={styles.td}>{s.batch || "—"}</td>
+                                <td style={styles.td}>
+                                  <button type="button" style={present ? styles.doneStudentButton : styles.notDoneStudentButton} onClick={()=>setAttendanceRecords(prev=>({...prev,[s.studentId!]:present?"absent":"present"}))}>
+                                    {present ? "✓ Present" : "○ Absent"}
+                                  </button>
+                                </td>
+                              </tr>;
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                  <div style={styles.card}>
+                    <h2>📊 Class Attendance Summary</h2>
+                    <div style={styles.grid}>
+                      {students.filter(s=>s.studentId).map(s=>{const stats=getAttendanceStats(s.studentId,s.authUid);return <div key={s.studentId} style={styles.summaryMiniCard}><strong>{s.name}</strong><span>{s.className || "—"}{s.batch ? ` · ${s.batch}` : ""}</span><b>{stats.percentage.toFixed(0)}%</b><small>{stats.present}/{stats.recorded} days present</small></div>;})}
+                    </div>
                   </div>
                 </div>
-                <div style={styles.legendRow}><span>🟢 Present</span><span>🔴 Absent</span><span>⚪ No record</span></div>
-              </div>
+              ) : (
+                <div style={styles.card}>
+                  <div style={styles.sectionTitleRow}><div><h2>📅 My Attendance</h2><p style={styles.muted}>The percentage and calendar below are calculated from the same daily attendance records.</p></div></div>
+                  <div style={styles.feeHistoryGrid}>
+                    <div><span style={styles.smallLabel}>Present</span><strong>{presentDays}</strong></div>
+                    <div><span style={styles.smallLabel}>Absent</span><strong>{absentDays}</strong></div>
+                    <div><span style={styles.smallLabel}>Attendance</span><strong>{attendancePct.toFixed(0)}%</strong></div>
+                    <div><span style={styles.smallLabel}>Recorded Days</span><strong>{recordedAttendance.length}</strong></div>
+                  </div>
+                  <div style={styles.calendarCard}>
+                    <div style={styles.calendarToolbar}><h3 style={{margin:0}}>{new Date(monthAttendance.y, monthAttendance.m, 1).toLocaleDateString("en-IN",{month:"long",year:"numeric"})}</h3><input style={styles.monthInput} type="month" value={studentCalendarMonth} onChange={e=>setStudentCalendarMonth(e.target.value)} /></div>
+                    <div style={styles.calendarGrid}>
+                      {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d=><div key={d} style={styles.calendarHead}>{d}</div>)}
+                      {Array.from({length:monthAttendance.first}).map((_,i)=><div key={"e"+i}/>)}
+                      {Array.from({length:monthAttendance.days},(_,i)=>i+1).map(day=>{
+                        const status=monthAttendance.map[day];
+                        return <div key={day} title={status ? `${day}: ${status}` : `${day}: No record`} style={{...styles.calendarDay,...(status==="present"?styles.calendarPresent:status==="absent"?styles.calendarAbsent:{})}}>{day}</div>;
+                      })}
+                    </div>
+                  </div>
+                  <div style={styles.legendRow}><span>🟢 Present</span><span>🔴 Absent</span><span>⚪ No record</span></div>
+                </div>
+              )
             )}
 
             {studentPage === "results" && (
@@ -2278,11 +2340,76 @@ export default function App() {
             )}
 
             {studentPage === "homework" && (
-              <div style={styles.card}>
-                <div style={styles.sectionTitleRow}><div><h2>📚 My Homework</h2><p style={styles.muted}>Your assigned work and completion status.</p></div><div style={styles.rankBadge}>{pendingHomework.length} pending</div></div>
-                {myHomework.length===0?<div style={styles.emptyBox}>No homework assigned to your class yet.</div>:myHomework.map(item=>{const done=Boolean(((item as any).completion||{})[studentSid]);return <div key={item.id} style={styles.homeworkItem}><div style={styles.homeworkMeta}><strong>{item.subject||"Homework"} · {item.title}</strong><span>{item.day||""}, {item.homeworkDate||""}</span></div><p style={{margin:"6px 0",whiteSpace:"pre-wrap"}}>{item.description}</p><small style={styles.muted}>Due: {item.dueDate||"No due date"}</small><div style={{marginTop:10}}><span style={done?styles.doneBadge:styles.pendingBadge}>{done?"✓ Homework Done":"⚠ Homework Not Done"}</span></div></div>})}
-                {pendingHomework.length>0 && <div style={styles.warningBox}><strong>⚠ Pending Work</strong><p style={{margin:"5px 0 0"}}>{pendingHomework.length} homework item(s) still need completion.</p></div>}
-              </div>
+              isCR ? (
+                <div>
+                  <div style={styles.pageHeader}>
+                    <div>
+                      <h1>📚 Homework Management</h1>
+                      <p style={styles.muted}>Create, edit, delete and track homework like Admin. CR changes are queued for Admin approval.</p>
+                    </div>
+                    <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                      <button style={styles.secondaryButton} onClick={loadHomework}>🔄 Refresh</button>
+                      <button style={styles.primaryButtonSmall} onClick={openAddHomework}>➕ Add Homework</button>
+                    </div>
+                  </div>
+                  {homeworkMessage && <div style={homeworkMessage.includes("success") || homeworkMessage.includes("approval") || homeworkMessage.includes("sent") ? styles.infoNotice : styles.errorBox}>{homeworkMessage}</div>}
+
+                  {showHomeworkForm && (
+                    <div style={styles.card}>
+                      <div style={styles.formHeader}><div><h2>{editingHomework ? "✏️ Edit Homework" : "➕ Add Homework"}</h2><p style={styles.muted}>Any change made by the CR goes to Admin for approval.</p></div><button style={styles.closeButton} onClick={resetHomeworkForm}>✕</button></div>
+                      <form onSubmit={saveHomework}>
+                        <div style={styles.formGrid}>
+                          <FormField label="Class *" value={homeworkClass} onChange={setHomeworkClass} placeholder="Select class" type="select" options={[{label:"All classes",value:""}, ...Array.from(new Set(students.map(s=>s.className).filter(Boolean))).map(v=>({label:v as string,value:v as string}))]} />
+                          <FormField label="Batch" value={homeworkBatch} onChange={setHomeworkBatch} placeholder="All batches" type="select" options={[{label:"All batches",value:""}, ...Array.from(new Set(students.map(s=>s.batch).filter(Boolean))).map(v=>({label:v as string,value:v as string}))]} />
+                          <FormField label="Subject" value={homeworkSubject} onChange={setHomeworkSubject} placeholder="Mathematics" required={false} />
+                          <FormField label="Title *" value={homeworkTitle} onChange={setHomeworkTitle} placeholder="Example: Chapter 3 Questions" />
+                          <FormField label="Homework Date *" value={homeworkDate} onChange={setHomeworkDate} type="date" />
+                          <FormField label="Due Date" value={homeworkDueDate} onChange={setHomeworkDueDate} type="date" required={false} />
+                        </div>
+                        <label style={styles.label}>Assign to Students</label>
+                        <div style={styles.studentPicker}>
+                          <div style={styles.pickerToolbar}>
+                            <button type="button" style={styles.secondaryButton} onClick={()=>setHomeworkAssignedStudents(students.filter(s=>s.studentId && (!homeworkClass || s.className===homeworkClass) && (!homeworkBatch || s.batch===homeworkBatch)).map(s=>s.studentId!))}>Select all matching</button>
+                            <button type="button" style={styles.secondaryButton} onClick={()=>setHomeworkAssignedStudents([])}>Clear</button>
+                          </div>
+                          <div style={styles.studentPickerGrid}>
+                            {students.filter(s=>s.studentId && (!homeworkClass || s.className===homeworkClass) && (!homeworkBatch || s.batch===homeworkBatch)).map(s=><label key={s.studentId} style={styles.studentPickerItem}><input type="checkbox" checked={homeworkAssignedStudents.includes(s.studentId!)} onChange={e=>setHomeworkAssignedStudents(prev=>e.target.checked?[...prev,s.studentId!]:prev.filter(id=>id!==s.studentId))}/><span>{s.name} <small>({s.className}{s.batch?` · ${s.batch}`:""})</small></span></label>)}
+                          </div>
+                          <p style={styles.muted}>Leave all unchecked to assign the homework to the selected class/batch.</p>
+                        </div>
+                        <label style={styles.label}>Homework / Instructions *</label>
+                        <textarea style={{...styles.input,minHeight:130,resize:"vertical"}} value={homeworkDescription} onChange={e=>setHomeworkDescription(e.target.value)} placeholder="Write the homework, questions, pages, instructions, etc." required />
+                        <div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={resetHomeworkForm}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingHomework}>{savingHomework?"Sending...":editingHomework?"⏳ Send Edit for Approval":"⏳ Send for Admin Approval"}</button></div>
+                      </form>
+                    </div>
+                  )}
+
+                  <div style={styles.card}>
+                    <div style={styles.sectionTitleRow}><div><h2>📋 All Homework</h2><p style={styles.muted}>Full homework register with completion tracking.</p></div></div>
+                    {homework.length===0?<div style={styles.emptyBox}>No homework added yet.</div>:homework.map(item=>{
+                      const roster=students.filter(s=>s.studentId && homeworkForStudent(s).some(h=>h.id===item.id));
+                      const completion=((item as any).completion||{}) as Record<string,boolean>;
+                      return <div key={item.id} style={styles.homeworkItem}>
+                        <div style={styles.homeworkMeta}><strong>{item.className || "All classes"}{item.batch?` · ${item.batch}`:" · All batches"}</strong><span>{item.day||""}, {item.homeworkDate||""}</span></div>
+                        <h3 style={{margin:"8px 0 4px"}}>{item.subject?`${item.subject}: `:""}{item.title}</h3>
+                        <p style={{margin:"0 0 8px",whiteSpace:"pre-wrap"}}>{item.description}</p>
+                        {item.dueDate&&<div style={styles.muted}>Due: {item.dueDate}</div>}
+                        <div style={styles.completionSummary}><strong>{roster.filter(s=>!completion[s.studentId!]).length}</strong> not completed · <strong>{roster.length}</strong> assigned</div>
+                        <div style={styles.defaulterList}>
+                          {roster.map(s=>{const done=Boolean(completion[s.studentId!]);return <button key={s.studentId} type="button" style={done?styles.doneStudentButton:styles.notDoneStudentButton} onClick={async()=>{const next={...completion,[s.studentId!]:!done};try{await createCrChangeRequest({type:"homework_completion",targetId:item.id,studentId:profile?.studentId||"",submittedBy:user?.uid||"",submittedByName:profile?.name||"Class Representative",payload:{completion:next}});setHomeworkMessage("Homework completion change sent to Admin for approval. ⏳");}catch(error:any){setHomeworkMessage(`Unable to submit homework completion: ${error?.message||"Unknown error"}`);}}}>{done?"✓":"○"} {s.name}</button>})}
+                        </div>
+                        <div style={styles.formActions}><button style={styles.editButton} onClick={()=>openEditHomework(item)}>✏️ Edit</button><button style={styles.deleteButton} onClick={()=>removeHomework(item)}>🗑️ Delete</button></div>
+                      </div>;
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div style={styles.card}>
+                  <div style={styles.sectionTitleRow}><div><h2>📚 My Homework</h2><p style={styles.muted}>Your assigned work and completion status.</p></div><div style={styles.rankBadge}>{pendingHomework.length} pending</div></div>
+                  {myHomework.length===0?<div style={styles.emptyBox}>No homework assigned to your class yet.</div>:myHomework.map(item=>{const done=Boolean(((item as any).completion||{})[studentSid]);return <div key={item.id} style={styles.homeworkItem}><div style={styles.homeworkMeta}><strong>{item.subject||"Homework"} · {item.title}</strong><span>{item.day||""}, {item.homeworkDate||""}</span></div><p style={{margin:"6px 0",whiteSpace:"pre-wrap"}}>{item.description}</p><small style={styles.muted}>Due: {item.dueDate||"No due date"}</small><div style={{marginTop:10}}><span style={done?styles.doneBadge:styles.pendingBadge}>{done?"✓ Homework Done":"⚠ Homework Not Done"}</span></div></div>})}
+                  {pendingHomework.length>0 && <div style={styles.warningBox}><strong>⚠ Pending Work</strong><p style={{margin:"5px 0 0"}}>{pendingHomework.length} homework item(s) still need completion.</p></div>}
+                </div>
+              )
             )}
 
             {studentPage === "fees" && (

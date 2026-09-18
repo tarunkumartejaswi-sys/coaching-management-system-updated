@@ -21,7 +21,12 @@ service cloud.firestore {
     }
 
     function isCR() {
-      return hasUserProfile() && userData().role in ['cr', 'CR', 'Cr', 'class_representative'];
+      return hasUserProfile() && (
+        userData().role in ['cr', 'CR', 'Cr', 'class_representative'] ||
+        (userData().studentId != null &&
+         exists(/databases/$(database)/documents/students/$(userData().studentId)) &&
+         get(/databases/$(database)/documents/students/$(userData().studentId)).data.isCR == true)
+      );
     }
 
     function isStudentLike() {
