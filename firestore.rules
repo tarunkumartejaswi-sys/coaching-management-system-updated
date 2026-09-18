@@ -3,15 +3,15 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
-    function isAdmin() {
-      return signedIn() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin";
-    }
+    function userData() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function isAdmin() { return signedIn() && userData().role == "admin"; }
+    function isCR() { return signedIn() && userData().role == "cr"; }
+    function isStudent() { return signedIn() && userData().role == "student"; }
 
     match /users/{userId} {
       allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
       allow create, update, delete: if isAdmin();
     }
-
 
     match /studentDirectory/{studentId} {
       allow read: if signedIn();
@@ -73,6 +73,17 @@ service cloud.firestore {
     match /fees/{studentId}/months/{monthId} {
       allow read: if isAdmin() || (signedIn() && get(/databases/$(database)/documents/students/$(studentId)).data.authUid == request.auth.uid);
       allow create, update, delete: if isAdmin();
+    }
+
+    // CRs can submit proposed changes, but only Admin can modify the real data.
+    match /crChangeRequests/{requestId} {
+      allow read: if isAdmin() || ((isCR() || isStudent()) && resource.data.submittedBy == request.auth.uid);
+      allow create: if request.resource.data.submittedBy == request.auth.uid &&
+        request.resource.data.status == "pending" &&
+        request.resource.data.type in ["attendance_update", "homework_add", "homework_edit", "homework_delete", "homework_completion", "cr_application"] &&
+        ((isCR() && request.resource.data.type != "cr_application" && request.resource.data.studentId == userData().studentId) ||
+         (isStudent() && request.resource.data.type == "cr_application" && request.resource.data.studentId == userData().studentId));
+      allow update, delete: if isAdmin();
     }
   }
 }
