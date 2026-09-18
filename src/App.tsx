@@ -33,6 +33,7 @@ import db, {
 
 import { getUserProfile } from "../firebase/user";
 import { getCrEligibility, isHomeworkPending } from "./crLogic.js";
+import "./premium.css";
 
 /* =========================================================
    TYPES
@@ -2876,6 +2877,40 @@ export default function App() {
   };
 
   /* =========================================================
+     CLASS REPRESENTATIVE PUBLIC / CR DASHBOARD
+  ========================================================= */
+
+  const crPublicPage = () => {
+    const classCrs = directoryStudents.filter((s: any) => s.isCR);
+    const myClass = studentData?.className || profile?.studentId;
+    const myClassCrs = myClass ? classCrs.filter((s: any) => s.className === myClass) : classCrs;
+    const visibleCrs = isAdmin ? classCrs : (myClassCrs.length ? myClassCrs : classCrs);
+    return <>
+      <div style={styles.pageHeader}>
+        <div><h1>⭐ Class Representative</h1><p style={styles.muted}>{isCR ? "Your class-management workspace." : "View the current Class Representative."}</p></div>
+      </div>
+      {isCR && <div style={styles.grid}>
+        <StatCard title="My Class" value={studentData?.className || "—"} icon="🏫" />
+        <StatCard title="Students" value={String(students.filter(s => !studentData?.className || s.className === studentData.className).length)} icon="👨‍🎓" />
+        <StatCard title="Attendance" value="Manage" icon="📅" />
+        <StatCard title="Homework" value="Manage" icon="📚" />
+      </div>}
+      <div style={styles.card}>
+        <h2>⭐ Current Class Representative{visibleCrs.length === 1 ? "" : "s"}</h2>
+        {visibleCrs.length === 0 ? <div style={styles.emptyBox}>No Class Representative has been assigned yet.</div> :
+          <div style={styles.crPublicGrid}>{visibleCrs.map((cr: any) => <div key={cr.studentId} style={styles.crPublicCard}>
+            <div style={styles.avatarLarge}>{cr.photoUrl ? <img src={cr.photoUrl} alt="CR" style={styles.avatarImage}/> : "⭐"}</div>
+            <div><strong style={{fontSize:17}}>{cr.name || cr.studentId}</strong><div style={styles.muted}>{cr.className || "Class"}{cr.batch ? ` · ${cr.batch}` : ""}</div>{cr.crSince && <small style={styles.muted}>CR since {new Date(cr.crSince).toLocaleDateString("en-IN")}</small>}</div>
+          </div>)}</div>}
+      </div>
+      {isCR && <div style={styles.card}><h2>🛡️ CR Permissions</h2><div style={styles.quickGrid}>
+        <button style={styles.quickAction} onClick={() => setPage("attendance")}><span style={{fontSize:24}}>📅</span><span><strong>Attendance</strong><small style={styles.muted}>Manage your assigned class</small></span></button>
+        <button style={styles.quickAction} onClick={() => setPage("homework")}><span style={{fontSize:24}}>📚</span><span><strong>Homework</strong><small style={styles.muted}>Add and manage class homework</small></span></button>
+      </div><div style={styles.infoNotice}>CR changes to official Attendance/Homework records are sent to Admin for approval. You cannot edit fees, marks, teachers or student accounts.</div></div>}
+    </>;
+  };
+
+  /* =========================================================
      CLASS REPRESENTATIVE ADMIN PAGE
   ========================================================= */
 
@@ -3805,12 +3840,12 @@ export default function App() {
             </button>
           )}
 
-          {isAdmin && <button
+          <button
             style={page === "cr" ? styles.navButtonActive : styles.navButton}
             onClick={() => setPage("cr")}
           >
             ⭐ Class Representative
-          </button>}
+          </button>
 
           <button
             style={
@@ -3864,7 +3899,7 @@ export default function App() {
 
           {page === "homework" && (isAdmin || isCR) && homeworkPage()}
 
-          {page === "cr" && (isAdmin ? crAdminPage() : null)}
+          {page === "cr" && (isAdmin ? crAdminPage() : crPublicPage())}
 
           {page === "notices" && noticesPage()}
         </main>

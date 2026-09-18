@@ -70,3 +70,45 @@ radial-gradient(circle at 90% 20%,rgba(14,165,233,.08),transparent 24%),#f6f8fc}
 .studentPageHeader h1{font-size:28px}
 @media(max-width:900px){.studentShell{grid-template-columns:1fr}.studentSidebar{position:static;height:auto;display:flex;overflow:auto;gap:5px;padding:10px;border-right:0;border-bottom:1px solid var(--cmf-border)}.studentNavLabel,.studentSideCard{display:none}.studentNav,.studentNavActive{width:auto;white-space:nowrap;margin:0}.studentMain{padding:18px}.studentPageHeader{align-items:flex-start}.studentHeaderRank{display:none}}
 @media(max-width:600px){.studentMain{padding:12px}.studentHero{padding:22px}.studentHero h2{font-size:22px!important}.heroAvatar{width:62px;height:62px}.studentPageHeader h1{font-size:24px}.tableWrapper{overflow-x:auto}.studentTopbar{padding:12px!important}}
+
+
+/* =========================================================
+   MOBILE RESPONSIVE LAYOUT
+========================================================= */
+@media (max-width: 900px) {
+  .appPage .topbar { padding: 10px 14px !important; min-height: 64px !important; }
+  .appPage .topbar h2 { font-size: 16px !important; }
+  .appPage .layout { display:block !important; min-height:calc(100vh - 64px) !important; }
+  .appPage aside { position:sticky !important; top:64px !important; z-index:19 !important; width:100% !important; height:auto !important; max-height:none !important; overflow-x:auto !important; overflow-y:hidden !important; display:flex !important; gap:7px !important; padding:8px !important; white-space:nowrap !important; }
+  .appPage aside button { width:auto !important; min-width:max-content !important; margin:0 !important; padding:10px 12px !important; }
+  .appPage main { padding:16px 12px 28px !important; max-width:none !important; }
+  .appPage main h1 { font-size:24px !important; }
+  .appPage main h2 { font-size:18px !important; }
+  .appPage .pageHeader { align-items:flex-start !important; flex-direction:column !important; gap:12px !important; }
+  .appPage .card { padding:16px !important; border-radius:16px !important; }
+  .appPage .formGrid { grid-template-columns:1fr !important; }
+  .appPage .grid { grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:10px !important; }
+  .appPage .twoColumn, .appPage .dashboardColumns { grid-template-columns:1fr !important; }
+  .appPage .studentWelcome, .appPage .dashboardHero, .appPage .studentHero { flex-direction:column !important; align-items:flex-start !important; padding:20px !important; }
+  .appPage .heroMetric, .appPage .heroDate { text-align:left !important; }
+  .appPage .tableWrapper { margin:0 -4px !important; overflow-x:auto !important; -webkit-overflow-scrolling:touch; }
+  .appPage table { min-width:700px !important; }
+  .appPage .feeDetailMetrics { grid-template-columns:1fr 1fr !important; }
+  .appPage .directorEditor { flex-direction:column !important; }
+  .appPage .requestCard { align-items:flex-start !important; }
+  .appPage .formActions { justify-content:stretch !important; }
+  .appPage .formActions button { flex:1 1 auto !important; min-height:42px !important; }
+  .appPage .quickGrid { grid-template-columns:1fr !important; }
+}
+@media (max-width: 560px) {
+  .appPage .grid { grid-template-columns:1fr 1fr !important; }
+  .appPage .statCard { padding:13px !important; }
+  .appPage .statIcon { width:40px !important; height:40px !important; font-size:18px !important; }
+  .appPage .statValue { font-size:18px !important; }
+  .appPage .feeDetailMetrics { grid-template-columns:1fr !important; }
+  .appPage .infoRow { flex-direction:column !important; gap:3px !important; align-items:flex-start !important; }
+  .appPage .calendarGrid { gap:3px !important; }
+  .appPage .calendarDay { font-size:11px !important; }
+  .appPage .studentPickerGrid { grid-template-columns:1fr !important; }
+  .appPage .crPublicGrid { grid-template-columns:1fr !important; }
+}

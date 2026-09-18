@@ -48,7 +48,7 @@ service cloud.firestore {
     }
 
     match /students/{studentId} {
-      allow read: if isAdmin() || ownsStudent(studentId);
+      allow read: if isAdmin() || isCR() || ownsStudent(studentId);
       allow create, delete: if isAdmin();
       allow update: if isAdmin() ||
         (ownsStudent(studentId) &&
