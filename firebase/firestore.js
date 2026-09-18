@@ -1,5 +1,5 @@
 import {
-  getFirestore,
+  initializeFirestore,
   collection,
   collectionGroup,
   doc,
@@ -15,7 +15,10 @@ import {
 
 import app from "./config";
 
-const db = getFirestore(app);
+const db = initializeFirestore(app, {
+  experimentalAutoDetectLongPolling: true,
+  useFetchStreams: false,
+});
 
 /** @typedef {{
  * id?: string,
