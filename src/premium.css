@@ -38,3 +38,36 @@ h1,h2,h3{letter-spacing:-.35px}
   .appPage table{min-width:720px}
   .appPage .metricList{grid-template-columns:1fr!important}
 }
+
+/* CMF FINAL STUDENT PORTAL */
+:root{--cmf-blue:#2563eb;--cmf-blue-dark:#0f172a;--cmf-blue-soft:#eff6ff;--cmf-white:#fff;--cmf-black:#020617;--cmf-border:#dbe4f0}
+body{margin:0;background:#f5f7fb;color:#0f172a}
+button,input,select,textarea{font-family:inherit}
+.studentTopbar{background:linear-gradient(135deg,#020617 0%,#0f172a 45%,#1d4ed8 100%);color:#fff;box-shadow:0 8px 30px rgba(2,6,23,.18)}
+.studentShell{display:grid;grid-template-columns:250px minmax(0,1fr);min-height:calc(100vh - 76px);background:
+radial-gradient(circle at 15% 10%,rgba(37,99,235,.10),transparent 28%),
+radial-gradient(circle at 90% 20%,rgba(14,165,233,.08),transparent 24%),#f6f8fc}
+.studentSidebar{padding:22px 14px;background:rgba(255,255,255,.92);border-right:1px solid var(--cmf-border);backdrop-filter:blur(16px);position:sticky;top:0;height:calc(100vh - 76px);box-sizing:border-box}
+.studentNavLabel{font-size:11px;font-weight:800;letter-spacing:.12em;color:#64748b;padding:8px 12px 12px}
+.studentNav,.studentNavActive{width:100%;border:0;background:transparent;display:flex;gap:12px;align-items:center;text-align:left;padding:12px 14px;border-radius:13px;margin:4px 0;cursor:pointer;font-weight:700;color:#475569}
+.studentNavActive{background:linear-gradient(135deg,#eff6ff,#dbeafe);color:#1d4ed8;box-shadow:inset 3px 0 0 #2563eb}
+.studentSideCard{margin:22px 4px 0;padding:15px;border-radius:16px;background:linear-gradient(145deg,#020617,#172554);color:#fff;box-shadow:0 12px 28px rgba(15,23,42,.16)}
+.studentSideCard strong{display:block;font-size:26px;margin:4px 0 9px}
+.studentSideCard small{display:block;color:#cbd5e1;line-height:1.4}
+.studentMain{padding:28px;min-width:0;max-width:1500px;width:100%;box-sizing:border-box;margin:0 auto}
+.studentPageHeader{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:22px}
+.studentHeaderRank{background:#fff;border:1px solid var(--cmf-border);padding:12px 18px;border-radius:16px;text-align:right;box-shadow:0 8px 24px rgba(15,23,42,.06)}
+.studentHeaderRank span{display:block;font-size:10px;letter-spacing:.12em;color:#64748b;font-weight:800}
+.studentHeaderRank strong{font-size:24px;color:#1d4ed8}
+.studentHero{position:relative;overflow:hidden;display:flex;justify-content:space-between;align-items:center;padding:30px;border-radius:24px;color:#fff;margin-bottom:20px;background:linear-gradient(135deg,#020617 0%,#172554 46%,#2563eb 100%);box-shadow:0 22px 50px rgba(30,64,175,.20)}
+.studentHero:after{content:"";position:absolute;width:280px;height:280px;border-radius:50%;right:-90px;top:-120px;background:rgba(255,255,255,.08);box-shadow:-80px 120px 0 rgba(255,255,255,.04)}
+.heroAvatar{position:relative;z-index:1;width:82px;height:82px;border-radius:24px;background:rgba(255,255,255,.16);display:flex;align-items:center;justify-content:center;font-size:34px;overflow:hidden;border:1px solid rgba(255,255,255,.25)}
+.progressTrack{height:8px;border-radius:99px;background:#e2e8f0;overflow:hidden}
+.progressFill{height:100%;border-radius:99px;background:linear-gradient(90deg,#2563eb,#38bdf8);transition:width .3s ease}
+.quickList{display:grid;gap:9px}
+.quickItem{border:1px solid #e2e8f0;background:#fff;border-radius:13px;padding:13px 15px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;color:#0f172a;text-align:left}
+.quickItem:hover{border-color:#93c5fd;transform:translateY(-1px)}
+.quickItem strong{color:#1d4ed8}
+.studentPageHeader h1{font-size:28px}
+@media(max-width:900px){.studentShell{grid-template-columns:1fr}.studentSidebar{position:static;height:auto;display:flex;overflow:auto;gap:5px;padding:10px;border-right:0;border-bottom:1px solid var(--cmf-border)}.studentNavLabel,.studentSideCard{display:none}.studentNav,.studentNavActive{width:auto;white-space:nowrap;margin:0}.studentMain{padding:18px}.studentPageHeader{align-items:flex-start}.studentHeaderRank{display:none}}
+@media(max-width:600px){.studentMain{padding:12px}.studentHero{padding:22px}.studentHero h2{font-size:22px!important}.heroAvatar{width:62px;height:62px}.studentPageHeader h1{font-size:24px}.tableWrapper{overflow-x:auto}.studentTopbar{padding:12px!important}}

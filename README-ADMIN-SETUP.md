@@ -149,7 +149,3 @@ The app uses Firebase Authentication, Firestore and Storage.
 - The student attendance summary and monthly calendar use the same student-status resolver so the two views stay consistent.
 - The duplicate `numericAmount` declaration in `firebase/firestore.js` has been removed.
 - Keep `FIREBASE_SERVICE_ACCOUNT_JSON` in Vercel as a Secret for Production, Preview, and Development, and redeploy after changing it.
-
-
-### Profile image uploads
-Student and director profile photos use the protected `/api/admin-upload-image` endpoint. This requires the same Firebase Admin environment variable already used for Change Login/Delete Student.
