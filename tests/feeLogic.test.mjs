@@ -105,3 +105,22 @@ test('previous dues use a separate record id so they never overwrite a real mont
   const { getPreviousDueRecordId } = await import('../src/feeLogic.js');
   assert.equal(getPreviousDueRecordId('2026-08', 'abc123'), 'previous-2026-08-abc123');
 });
+
+test('payment month options include only real monthly fee records and sort newest first', async () => {
+  const { getPaymentMonthOptions } = await import('../src/feeLogic.js');
+  const result = getPaymentMonthOptions([
+    { monthId: '2026-07', monthlyFee: 500, isPreviousDue: true },
+    { monthId: '2026-08', monthlyFee: 500, isPreviousDue: false },
+    { monthId: '2026-10', monthlyFee: 600, isPreviousDue: false },
+    { monthId: '2026-09', monthlyFee: 500, isPreviousDue: false },
+  ]);
+  assert.deepEqual(result.map((x) => x.monthId), ['2026-10', '2026-09', '2026-08']);
+});
+
+test('fee dashboard is empty when there are no fee records', async () => {
+  const { summarizeFeeRecords } = await import('../src/feeLogic.js');
+  assert.deepEqual(summarizeFeeRecords([], '2026-09'), {
+    dues: 0, paid: 0, remaining: 0, collected: 0,
+    students: 0, fullyPaid: 0, partial: 0, unpaid: 0,
+  });
+});

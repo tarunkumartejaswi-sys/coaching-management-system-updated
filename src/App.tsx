@@ -36,6 +36,7 @@ import db, {
   deletePreviousDue,
   getClassTuitionFees,
   setClassTuitionFee,
+  resetAllFeeRecords,
   recordLoginHistory,
   createUserSession,
   touchUserSession,
@@ -46,7 +47,7 @@ import db, {
 import { getUserProfile } from "../firebase/user";
 import { getCrEligibility, isHomeworkPending } from "./crLogic.js";
 import { buildMonthlyStudentReport, getTestPercentages } from "./studentReportLogic.js";
-import { getBillingMonthId, getMonthlyFeeStatus, summarizeFeeRecords } from "./feeLogic.js";
+import { getBillingMonthId, getMonthlyFeeStatus, summarizeFeeRecords, getPaymentMonthOptions } from "./feeLogic.js";
 import { buildLoginHistoryEntry } from "./sessionLogic.js";
 import "./premium.css";
 
@@ -241,6 +242,7 @@ export default function App() {
   const [classTuitionFees, setClassTuitionFees] = useState<any[]>([]);
   const [classFeeMessage, setClassFeeMessage] = useState("");
   const [classFeeSaving, setClassFeeSaving] = useState(false);
+  const [feeResetting, setFeeResetting] = useState(false);
   const [classFeeDrafts, setClassFeeDrafts] = useState<Record<string, string>>({});
   const [selectedFeeMonth, setSelectedFeeMonth] = useState<Fee | null>(null);
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
@@ -300,6 +302,7 @@ export default function App() {
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("Cash");
   const [paymentNote, setPaymentNote] = useState("");
+  const [paymentMonthId, setPaymentMonthId] = useState("");
   const [savingPayment, setSavingPayment] = useState(false);
   const [selectedFeeStudent, setSelectedFeeStudent] = useState<Student | null>(
     null
@@ -428,11 +431,15 @@ export default function App() {
     setFeeMessage("");
 
     try {
-      for (const student of students) {
-        await ensureCurrentMonthFee(student);
-        await syncStudentFeeDue(student.studentId!);
+      // Opening Fees renews the current calendar month only for classes that
+      // actually have tuition configured. A fresh setup therefore stays empty.
+      const classRows = await getClassTuitionFees();
+      if (classRows.length) {
+        for (const student of students) {
+          await ensureCurrentMonthFee(student);
+          if (student.studentId) await syncStudentFeeDue(student.studentId);
+        }
       }
-
       const allFees = await getAllFees();
       setFees(allFees);
 
@@ -469,10 +476,19 @@ export default function App() {
         await ensureCurrentMonthFee(student);
         fee = await getCurrentMonthFee(student.studentId);
       }
+      const history = await getStudentFeeHistory(student.studentId);
+      const options = getPaymentMonthOptions(history);
+      const chosen = fee || options[0] || null;
+      if (!chosen) {
+        setFeeMessage("No monthly fee has been created for this student yet. Set the class tuition first.");
+        return;
+      }
       setSelectedFeeStudent(student);
+      setSelectedFeeHistory(history);
       setPaymentStudent(student);
-      setPaymentFee(fee);
-      setPaymentAmount(String(fee?.pendingAmount || 0));
+      setPaymentFee(chosen);
+      setPaymentMonthId(chosen.monthId || "");
+      setPaymentAmount(String(chosen.pendingAmount || 0));
       setPaymentMethod("Cash");
       setPaymentNote("");
       setShowPayment(false);
@@ -484,6 +500,15 @@ export default function App() {
         }`
       );
     }
+  };
+
+  const changePaymentMonth = (monthId: string) => {
+    setPaymentMonthId(monthId);
+    const selected = selectedFeeHistory.find((fee) => fee.monthId === monthId && fee.isPreviousDue !== true);
+    if (!selected) return;
+    setPaymentFee(selected);
+    setPaymentAmount(String(selected.pendingAmount || 0));
+    setPaymentNote("");
   };
 
   const savePayment = async (e: React.FormEvent) => {
@@ -570,6 +595,29 @@ export default function App() {
     setPaymentFee(fee);
     setPage("feeMonth");
     window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const resetFeeRecords = async () => {
+    if (!isAdmin) return;
+    const confirmed = window.confirm("Reset ALL fee records for ALL students? This deletes payments, monthly fees and previous dues permanently. Students and other modules will remain.");
+    if (!confirmed) return;
+    setFeeResetting(true);
+    setFeeMessage("");
+    try {
+      const deleted = await resetAllFeeRecords();
+      setFees([]);
+      const updatedStudents = await getStudents();
+      setStudents(updatedStudents);
+      setSelectedFeeStudent(null);
+      setSelectedFeeHistory([]);
+      setSelectedFeeMonth(null);
+      setFeeMessage(`Fee records reset successfully. ${deleted} record(s) removed. You can now enter class tuition from scratch.`);
+      setPage("fees");
+    } catch (error: any) {
+      setFeeMessage(`Unable to reset fee records: ${error?.message || "Unknown error"}`);
+    } finally {
+      setFeeResetting(false);
+    }
   };
 
   const loadClassTuition = async () => {
@@ -3438,7 +3486,7 @@ export default function App() {
     return <>
       <div style={styles.pageHeader}><div><button style={styles.textButton} onClick={() => setPage("fees")}>← Back to Fees</button><h1>🏫 Class Tuition Fees</h1><p style={styles.muted}>Set one monthly tuition amount for each class. New monthly dues use this amount.</p></div><button style={styles.secondaryButton} onClick={loadClassTuition}>🔄 Refresh</button></div>
       {classFeeMessage && <div style={classFeeMessage.includes("successfully") ? styles.successBox : styles.errorBox}>{classFeeMessage}</div>}
-      <div style={styles.card}><div style={styles.infoNotice}>Automatic billing: when a new calendar month is first opened, each student receives the tuition fee configured for their class. Existing months and payments are never overwritten by renewal.</div>{classes.length === 0 ? <div style={styles.emptyBox}>Add students with a class first.</div> : <div style={styles.simpleFeeList}>{classes.map((className) => { const configured = classTuitionFees.find((row:any) => row.className === className); const draft = classFeeDrafts[className] ?? String(configured?.monthlyFee ?? students.find((s) => s.className === className)?.monthlyFee ?? 0); const count = students.filter((s) => s.className === className).length; return <div key={className} style={styles.previousDueRow}><div><strong>{className}</strong><span style={styles.muted}>{count} student{count === 1 ? "" : "s"}</span></div><input style={styles.compactInput} type="number" min="0" value={draft} onChange={(e) => setClassFeeDrafts((prev) => ({...prev, [className]: e.target.value}))}/><button style={styles.primaryButtonSmall} disabled={classFeeSaving} onClick={() => saveClassTuition(className)}>💾 Save</button></div>; })}</div>}</div>
+      <div style={styles.card}><div style={styles.infoNotice}>Automatic billing: when a new calendar month is first opened, each student receives the tuition fee configured for their class. Existing months and payments are never overwritten by renewal.</div>{classes.length === 0 ? <div style={styles.emptyBox}>Add students with a class first.</div> : <div style={styles.simpleFeeList}>{classes.map((className) => { const configured = classTuitionFees.find((row:any) => row.className === className); const draft = classFeeDrafts[className] ?? String(configured?.monthlyFee ?? 0); const count = students.filter((s) => s.className === className).length; return <div key={className} style={styles.previousDueRow}><div><strong>{className}</strong><span style={styles.muted}>{count} student{count === 1 ? "" : "s"}</span></div><input style={styles.compactInput} type="number" min="0" value={draft} onChange={(e) => setClassFeeDrafts((prev) => ({...prev, [className]: e.target.value}))}/><button style={styles.primaryButtonSmall} disabled={classFeeSaving} onClick={() => saveClassTuition(className)}>💾 Save</button></div>; })}</div>}</div>
     </>;
   };
 
@@ -3634,10 +3682,36 @@ export default function App() {
   ========================================================= */
   const feeBack = () => setPage(selectedFeeMonth ? "feeMonth" : selectedFeeStudent ? "feeDetail" : "fees");
 
-  const feePaymentPage = () => !paymentStudent || !paymentFee ? null : <div>
-    <div style={styles.pageHeader}><div><button style={styles.textButton} onClick={feeBack}>← Back</button><h1>💵 Make Payment</h1><p style={styles.muted}>{paymentStudent.name} · {paymentFee.monthId}</p></div></div>
-    <div style={styles.card}><div style={styles.grid}><StatCard title="Fee Dues" value={`₹${Number(paymentFee.monthlyFee||0).toLocaleString("en-IN")}`} icon="💰"/><StatCard title="Fee Paid" value={`₹${Number(paymentFee.paidAmount||0).toLocaleString("en-IN")}`} icon="🟢"/><StatCard title="Remaining" value={`₹${Number(paymentFee.pendingAmount||0).toLocaleString("en-IN")}`} icon="🔴"/></div>
-    <form onSubmit={savePayment}><div style={styles.formGrid}><FormField label="Payment Amount ₹" value={paymentAmount} onChange={setPaymentAmount} placeholder="Enter amount" type="number"/><div><label style={styles.label}>Payment Method</label><select style={styles.input} value={paymentMethod} onChange={e=>setPaymentMethod(e.target.value)}><option>Cash</option><option>UPI</option><option>Bank Transfer</option><option>Card</option></select></div><FormField label="Note" value={paymentNote} onChange={setPaymentNote} placeholder="Optional note"/></div><div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={feeBack}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingPayment}>{savingPayment?"Saving...":"✅ Save Payment"}</button></div></form></div></div>;
+  const feePaymentPage = () => {
+    if (!paymentStudent) return null;
+    const paymentMonths = getPaymentMonthOptions(selectedFeeHistory);
+    const selected = paymentFee || paymentMonths.find((fee) => fee.monthId === paymentMonthId) || null;
+    return <div>
+      <div style={styles.pageHeader}>
+        <div><button style={styles.textButton} onClick={feeBack}>← Back</button><h1>💵 Make Payment</h1><p style={styles.muted}>{paymentStudent.name} · Select the month first, then enter the amount paid.</p></div>
+      </div>
+      <div style={styles.card}>
+        <div style={styles.paymentStepHeader}><span>01</span><div><strong>Select Fee Month</strong><small>Only monthly tuition records are shown here.</small></div></div>
+        <select style={styles.premiumSelect} value={paymentMonthId} onChange={(e) => changePaymentMonth(e.target.value)}>
+          <option value="">Select month</option>
+          {paymentMonths.map((fee) => <option key={fee.id || fee.monthId} value={fee.monthId}>{fee.monthId} · Due ₹{Number(fee.pendingAmount || 0).toLocaleString("en-IN")}</option>)}
+        </select>
+        {paymentMonths.length === 0 && <div style={styles.emptyBox}>No monthly fee records available. Set the class tuition first.</div>}
+      </div>
+      {selected && <div style={styles.card}>
+        <div style={styles.feePaymentHero}><div><span style={styles.smallLabel}>Selected Month</span><strong>{selected.monthId}</strong></div><span style={selected.pendingAmount > 0 ? styles.pendingBadge : styles.paidBadge}>{selected.pendingAmount > 0 ? "🔴 DUE" : "🟢 PAID"}</span></div>
+        <div style={styles.grid}><StatCard title="Fee Due" value={`₹${Number(selected.monthlyFee||0).toLocaleString("en-IN")}`} icon="💰"/><StatCard title="Already Paid" value={`₹${Number(selected.paidAmount||0).toLocaleString("en-IN")}`} icon="🟢"/><StatCard title="Remaining" value={`₹${Number(selected.pendingAmount||0).toLocaleString("en-IN")}`} icon="🔴"/></div>
+        <form onSubmit={savePayment}>
+          <div className="premium-payment-grid" style={styles.formGrid}>
+            <FormField label="Amount Paid ₹" value={paymentAmount} onChange={setPaymentAmount} placeholder="Enter amount paid" type="number"/>
+            <div><label style={styles.label}>Payment Method</label><select style={styles.input} value={paymentMethod} onChange={e=>setPaymentMethod(e.target.value)}><option>Cash</option><option>UPI</option><option>Bank Transfer</option><option>Card</option></select></div>
+            <FormField label="Note" value={paymentNote} onChange={setPaymentNote} placeholder="Optional note"/>
+          </div>
+          <div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={feeBack}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingPayment || Number(selected.pendingAmount || 0) <= 0}>{savingPayment?"Saving...":"✅ Record Payment"}</button></div>
+        </form>
+      </div>}
+    </div>;
+  };
 
   const feeEditPage = () => !editFeeStudent ? null : <div><div style={styles.pageHeader}><div><button style={styles.textButton} onClick={feeBack}>← Back</button><h1>✏️ Edit Monthly Fee</h1><p style={styles.muted}>{editFeeStudent.name} · {editFeeStudent.studentId}</p></div></div><div style={styles.card}><form onSubmit={saveMonthlyFeeEdit}><div style={styles.formGrid}><FormField label="Student" value={editFeeStudent.name||""} onChange={()=>{}} placeholder="Student"/><FormField label="Monthly Fee ₹" value={editMonthlyFee} onChange={setEditMonthlyFee} placeholder="1500" type="number"/></div><div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={feeBack}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingFeeEdit}>{savingFeeEdit?"Saving...":"💾 Save Fee"}</button></div></form></div></div>;
 
@@ -3680,18 +3754,53 @@ export default function App() {
 
   const feesPage = () => {
     const currentMonth = getBillingMonthId();
-    const currentSummary = summarizeFeeRecords(fees.filter((f) => f.isPreviousDue !== true), currentMonth);
-    const previousDueTotal = fees.filter((f) => f.isPreviousDue === true).reduce((sum, fee) => sum + Number(fee.pendingAmount || 0), 0);
+    const monthlyRecords = fees.filter((f) => f.isPreviousDue !== true);
+    const currentSummary = summarizeFeeRecords(monthlyRecords, currentMonth);
     const allPaid = fees.reduce((sum, fee) => sum + Number(fee.paidAmount || 0), 0);
-    const allDue = fees.reduce((sum, fee) => sum + Number(fee.monthlyFee || 0), 0) + previousDueTotal;
     const allRemaining = fees.reduce((sum, fee) => sum + Number(fee.pendingAmount || 0), 0);
+    const paymentRows = monthlyRecords.flatMap((fee) => {
+      const student = students.find((item) => item.studentId === fee.studentId);
+      return (fee.paymentHistory || []).map((payment, index) => ({ student, fee, payment, index }));
+    }).filter((row) => row.student);
+    paymentRows.sort((a, b) => String(b.payment.date || "").localeCompare(String(a.payment.date || "")));
+    const reportSummary = summarizeFeeRecords(monthlyRecords, feeReportMonth);
     return <>
-      <div style={styles.pageHeader}><div><h1>💰 Fees</h1><p style={styles.muted}>Simple class-wise tuition, student-wise months and payments.</p></div><div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button style={styles.secondaryButton} onClick={() => { setPage("feeClassTuition"); loadClassTuition(); }}>🏫 Class Tuition</button><button style={styles.primaryButtonSmall} onClick={loadFees} disabled={feeLoading}>{feeLoading ? "Refreshing..." : "🔄 Refresh"}</button></div></div>
+      <div style={styles.feePremiumHero}>
+        <div><span style={styles.heroEyebrow}>FINANCE · ADMIN</span><h1>💰 Fee Management</h1><p>Class tuition, monthly collection and student payments in one clean workspace.</p></div>
+        <div style={styles.feeHeroActions}><button style={styles.secondaryButton} onClick={() => { setPage("feeClassTuition"); loadClassTuition(); }}>🏫 Tuition Setup</button><button style={styles.primaryButtonSmall} onClick={loadFees} disabled={feeLoading}>{feeLoading ? "Refreshing..." : "↻ Refresh"}</button></div>
+      </div>
       {feeMessage && <div style={feeMessage.includes("successfully") || feeMessage.includes("recalculated") ? styles.successBox : styles.errorBox}>{feeMessage}</div>}
-      <div style={styles.grid}><StatCard title={`This Month Due · ${currentMonth}`} value={`₹${currentSummary.dues.toLocaleString("en-IN")}`} icon="💰"/><StatCard title="Total Fee Paid" value={`₹${allPaid.toLocaleString("en-IN")}`} icon="🟢"/><StatCard title="Total Remaining" value={`₹${allRemaining.toLocaleString("en-IN")}`} icon="🔴"/><StatCard title="Total Money Collected" value={`₹${allPaid.toLocaleString("en-IN")}`} icon="💳"/></div>
-      <div style={styles.card}><h2>📊 Current Month Collection</h2><p style={styles.muted}>Current tuition collection only. Previous dues are shown separately.</p><div style={{...styles.progressTrack,marginTop:14}}><div style={{...styles.progressFill,width:`${currentSummary.dues ? Math.min(100,(currentSummary.paid/currentSummary.dues)*100) : 0}%`}}/></div><div style={{display:"flex",justifyContent:"space-between",marginTop:9,fontSize:12,color:"#64748b"}}><span>Collected ₹{currentSummary.paid.toLocaleString("en-IN")}</span><span>Expected ₹{currentSummary.dues.toLocaleString("en-IN")}</span></div></div>
-      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>👨‍🎓 Students</h2><p style={styles.muted}>Click a student to see month-wise dues. Then click a month to manage it.</p></div><strong>{students.length} students</strong></div>{students.length === 0 ? <div style={styles.emptyBox}>No students found.</div> : <div style={styles.simpleFeeList}>{students.map((student) => { const current = fees.find((fee) => fee.studentId === student.studentId && fee.monthId === currentMonth && fee.isPreviousDue !== true); const remaining = Number(current?.pendingAmount || 0) + fees.filter((fee) => fee.studentId === student.studentId && fee.isPreviousDue === true).reduce((sum, fee) => sum + Number(fee.pendingAmount || 0), 0); return <button key={student.studentId || student.id} type="button" style={styles.studentFeeLink} onClick={() => openFeeHistory(student)}><div><strong>{student.name || "Unnamed student"}</strong><span style={styles.muted}>{student.studentId} · {student.className || "Class not set"}</span></div><div><span>Monthly ₹{Number(student.monthlyFee || 0).toLocaleString("en-IN")}</span><strong>Remaining ₹{remaining.toLocaleString("en-IN")}</strong></div><span>→</span></button>; })}</div>}</div>
-      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📜 Payment History</h2><p style={styles.muted}>Open every recorded payment in its own history page.</p></div><button style={styles.secondaryButton} onClick={() => setPage("feePaymentHistory")}>View Payment History →</button></div><div style={styles.infoNotice}>Total due across stored fee records: <strong>₹{allDue.toLocaleString("en-IN")}</strong>. Total remaining includes previous dues. Every payment edit/delete recalculates these values.</div></div>
+
+      <div style={styles.feeMetricGrid}>
+        <div style={styles.feeMetricCard}><span>💳</span><small>Total Money Collected</small><strong>₹{allPaid.toLocaleString("en-IN")}</strong><em>All recorded payments</em></div>
+        <div style={styles.feeMetricCard}><span>🟠</span><small>Fee Dues</small><strong>₹{monthlyRecords.reduce((s,f)=>s+Number(f.monthlyFee||0),0).toLocaleString("en-IN")}</strong><em>Monthly tuition charged</em></div>
+        <div style={styles.feeMetricCard}><span>🔴</span><small>Remaining</small><strong>₹{allRemaining.toLocaleString("en-IN")}</strong><em>Unpaid balance</em></div>
+        <div style={styles.feeMetricCard}><span>📅</span><small>This Month</small><strong>₹{currentSummary.paid.toLocaleString("en-IN")}</strong><em>{currentMonth} collected</em></div>
+      </div>
+
+      <div style={styles.feeDashboardGrid}>
+        <div style={styles.card}>
+          <div style={styles.sectionTitleRow}><div><h2>📊 Collection Overview</h2><p style={styles.muted}>Current month collection against monthly tuition dues.</p></div><strong>{currentSummary.dues ? `${Math.round((currentSummary.paid/currentSummary.dues)*100)}%` : "0%"}</strong></div>
+          <div style={styles.progressTrack}><div style={{...styles.progressFill,width:`${currentSummary.dues ? Math.min(100,(currentSummary.paid/currentSummary.dues)*100) : 0}%`}}/></div>
+          <div style={styles.feeOverviewNumbers}><span>Collected <b>₹{currentSummary.paid.toLocaleString("en-IN")}</b></span><span>Due <b>₹{currentSummary.dues.toLocaleString("en-IN")}</b></span><span>Remaining <b>₹{currentSummary.remaining.toLocaleString("en-IN")}</b></span></div>
+        </div>
+        <div style={styles.card}>
+          <div className="sectionTitleRow" style={styles.sectionTitleRow}><div><h2>📅 Monthly Report</h2><p style={styles.muted}>Choose a month for a quick financial snapshot.</p></div><select style={styles.premiumSelectSmall} value={feeReportMonth} onChange={e=>setFeeReportMonth(e.target.value)}><option value={currentMonth}>{currentMonth}</option>{Array.from(new Set(monthlyRecords.map(f=>f.monthId).filter(Boolean))).sort().reverse().filter(m=>m!==currentMonth).map(m=><option key={m} value={m}>{m}</option>)}</select></div>
+          <div style={styles.reportMiniGrid}><div><small>Fee Due</small><strong>₹{reportSummary.dues.toLocaleString("en-IN")}</strong></div><div><small>Paid</small><strong>₹{reportSummary.paid.toLocaleString("en-IN")}</strong></div><div><small>Remaining</small><strong>₹{reportSummary.remaining.toLocaleString("en-IN")}</strong></div><div><small>Paid Students</small><strong>{reportSummary.fullyPaid}</strong></div></div>
+        </div>
+      </div>
+
+      <div style={styles.card}>
+        <div style={styles.sectionTitleRow}><div><h2>👨‍🎓 Student Fees</h2><p style={styles.muted}>Select a student to open their month-wise fee ledger.</p></div><strong>{students.length} students</strong></div>
+        {students.length === 0 ? <div style={styles.emptyBox}>No students found.</div> : <div style={styles.feeStudentGrid}>{students.map((student) => { const studentFees=fees.filter(f=>f.studentId===student.studentId); const remaining=studentFees.reduce((s,f)=>s+Number(f.pendingAmount||0),0); const paid=studentFees.reduce((s,f)=>s+Number(f.paidAmount||0),0); return <button key={student.studentId || student.id} type="button" style={styles.feeStudentCard} onClick={()=>openFeeHistory(student)}><span style={styles.feeAvatar}>{(student.name||"?").trim().charAt(0).toUpperCase()}</span><div><strong>{student.name || "Unnamed student"}</strong><small>{student.studentId} · {student.className || "Class not set"}</small><small>Paid ₹{paid.toLocaleString("en-IN")} · Remaining ₹{remaining.toLocaleString("en-IN")}</small></div><span style={remaining>0?styles.pendingBadge:styles.paidBadge}>{remaining>0?`₹${remaining.toLocaleString("en-IN")}`:"Paid"}</span></button>; })}</div>}
+      </div>
+
+      <div style={styles.card}>
+        <div style={styles.sectionTitleRow}><div><h2>📜 Payment History</h2><p style={styles.muted}>Edit or delete any payment from its dedicated page.</p></div><button style={styles.secondaryButton} onClick={()=>setPage("feePaymentHistory")}>View All →</button></div>
+        {paymentRows.length===0?<div style={styles.emptyBox}>No payments recorded yet.</div>:<div style={styles.simpleFeeList}>{paymentRows.slice(0,5).map(row=><div key={`${row.student!.studentId}-${row.fee.monthId}-${row.index}`} style={styles.paymentHistoryCard}><div><strong>{row.student!.name}</strong><span style={styles.muted}>{row.fee.monthId} · {row.payment.method||"Cash"}</span></div><strong>₹{Number(row.payment.amount||0).toLocaleString("en-IN")}</strong><div style={styles.linkRow}><button style={styles.editButton} onClick={()=>openEditFeePayment(row.student!,row.fee,row.index)}>✏️ Edit</button><button style={styles.deleteButton} onClick={()=>openDeleteFeePayment(row.student!,row.fee,row.index)}>🗑️ Delete</button></div></div>)}</div>}
+      </div>
+
+      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>⚙️ Fee Data Control</h2><p style={styles.muted}>Use this only when starting the fee module from scratch. Students and all non-fee data stay safe.</p></div><button style={styles.deleteButton} disabled={feeResetting} onClick={resetFeeRecords}>{feeResetting?"Resetting...":"🗑️ Reset All Fee Records"}</button></div></div>
     </>;
   };
 
@@ -4092,6 +4201,21 @@ function FormField({
 const styles: {
   [key: string]: React.CSSProperties;
 } = {
+  feePremiumHero:{display:"flex",alignItems:"center",justifyContent:"space-between",gap:24,padding:"28px 30px",marginBottom:18,borderRadius:24,background:"linear-gradient(135deg,#07132f 0%,#123a88 58%,#2563eb 100%)",color:"#fff",boxShadow:"0 18px 45px rgba(15,23,42,.18)"},
+  feeHeroActions:{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"},
+  feeMetricGrid:{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:14,marginBottom:18},
+  feeMetricCard:{padding:"20px",borderRadius:20,background:"linear-gradient(180deg,#fff,#f8fbff)",border:"1px solid #e2e8f0",boxShadow:"0 12px 30px rgba(15,23,42,.07)",display:"grid",gridTemplateColumns:"44px 1fr",columnGap:12,alignItems:"center"},
+  feeMetricCardSpan:{},
+  feeDashboardGrid:{display:"grid",gridTemplateColumns:"1.25fr .95fr",gap:16,marginBottom:16},
+  feeOverviewNumbers:{display:"flex",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginTop:12,fontSize:12,color:"#64748b"},
+  reportMiniGrid:{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:10,marginTop:14},
+  reportMiniCard:{},
+  feeStudentGrid:{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:10},
+  feeStudentCard:{width:"100%",boxSizing:"border-box",border:"1px solid #e2e8f0",background:"#fff",borderRadius:17,padding:"14px",display:"grid",gridTemplateColumns:"44px 1fr auto",gap:12,alignItems:"center",textAlign:"left",cursor:"pointer",boxShadow:"0 8px 24px rgba(15,23,42,.05)"},
+  premiumSelect:{width:"100%",padding:"14px 15px",borderRadius:13,border:"1px solid #cbd5e1",background:"#fff",fontWeight:700,fontSize:15,outline:"none"},
+  premiumSelectSmall:{padding:"9px 11px",borderRadius:11,border:"1px solid #cbd5e1",background:"#fff",fontWeight:700},
+  paymentStepHeader:{display:"flex",alignItems:"center",gap:12,marginBottom:14},
+  feePaymentHero:{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,padding:"14px 16px",marginBottom:16,borderRadius:15,background:"#f8fafc",border:"1px solid #e2e8f0"},
   studentTopbar:{display:"flex",alignItems:"center",justifyContent:"space-between",gap:16,padding:"14px 24px",background:"linear-gradient(135deg,#020617,#0f172a 55%,#1d4ed8)",color:"#fff",position:"sticky",top:0,zIndex:20,boxShadow:"0 8px 30px rgba(2,6,23,.18)"},
   studentShell:{display:"grid",gridTemplateColumns:"250px minmax(0,1fr)",minHeight:"calc(100vh - 76px)"},
   studentSidebar:{padding:"22px 14px",background:"rgba(255,255,255,.94)",borderRight:"1px solid #dbe4f0",backdropFilter:"blur(16px)",position:"sticky",top:76,height:"calc(100vh - 76px)",boxSizing:"border-box"},

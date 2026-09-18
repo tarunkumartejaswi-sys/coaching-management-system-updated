@@ -173,19 +173,20 @@ export const ensureCurrentMonthFee = async (student) => {
     await deleteDoc(feeRef);
   }
 
-  let monthlyFee = Number(
-    student.monthlyFee ?? student.feeDue ?? 0
-  );
-
-  // Class tuition is the source of truth when the Admin has configured a
-  // tuition fee for this class. Student-level monthlyFee remains a fallback
-  // for older records that have not been migrated to class tuition yet.
+  // Class tuition is the only source of truth for the new fee module.
+  // Old student-level fee fields are deliberately ignored so the redesigned
+  // module can start cleanly without resurrecting legacy dues.
+  let monthlyFee = 0;
   if (student.className) {
     const classFeeSnap = await getDoc(doc(db, "classFees", String(student.className).trim()));
     if (classFeeSnap.exists()) {
-      monthlyFee = Number(classFeeSnap.data()?.monthlyFee || 0);
+      monthlyFee = Math.max(Number(classFeeSnap.data()?.monthlyFee || 0), 0);
     }
   }
+
+  // No class tuition configured means no fee document should be created.
+  // This keeps a fresh fee section genuinely empty until Admin sets tuition.
+  if (monthlyFee <= 0) return null;
 
   // Billing is month-based: when the calendar month changes, a fresh fee
   // document is created for the new month. The previous month's payments
@@ -217,6 +218,24 @@ export const ensureCurrentMonthFeesForStudents = async (students = []) => {
   }
 
   return created;
+};
+
+export const resetAllFeeRecords = async () => {
+  const studentsSnapshot = await getDocs(collection(db, "students"));
+  let deleted = 0;
+  for (const studentDoc of studentsSnapshot.docs) {
+    const months = await getDocs(collection(db, "fees", studentDoc.id, "months"));
+    for (const monthDoc of months.docs) {
+      await deleteDoc(monthDoc.ref);
+      deleted += 1;
+    }
+    await updateDoc(studentDoc.ref, { monthlyFee: 0, feeDue: 0 });
+  }
+  const classFeeSnapshot = await getDocs(collection(db, "classFees"));
+  for (const classFeeDoc of classFeeSnapshot.docs) {
+    await deleteDoc(classFeeDoc.ref);
+  }
+  return deleted;
 };
 
 export const getAllFees = async () => {
@@ -400,8 +419,11 @@ export const setClassTuitionFee = async (className, monthlyFee) => {
       const paid = Math.max(Number(fee.paidAmount) || 0, 0);
       const pending = Math.max(record.monthlyFee - paid, 0);
       await updateDoc(feeRef, { monthlyFee: record.monthlyFee, pendingAmount: pending, status: getMonthlyFeeStatus(record.monthlyFee, pending, paid), updatedAt: new Date().toISOString() });
-      await syncStudentFeeDue(sid);
+    } else if (!feeSnap.exists()) {
+      const newFee = buildMonthlyFeeRecord({ studentId: sid, monthlyFee: record.monthlyFee });
+      await setDoc(feeRef, newFee);
     }
+    await syncStudentFeeDue(sid);
   }));
   return record;
 };

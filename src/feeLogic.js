@@ -93,3 +93,10 @@ export function getPreviousDueRecordId(monthId, suffix = '') {
   const cleanSuffix = String(suffix || '').trim();
   return `previous-${cleanMonth}-${cleanSuffix}`;
 }
+
+
+export function getPaymentMonthOptions(history = []) {
+  return history
+    .filter((fee) => fee?.isPreviousDue !== true && fee?.monthId)
+    .sort((a, b) => String(b.monthId).localeCompare(String(a.monthId)));
+}
