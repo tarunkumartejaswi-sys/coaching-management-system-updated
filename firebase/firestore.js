@@ -16,6 +16,7 @@ import {
 import app from "./config";
 import { buildMonthlyFeeRecord, getBillingMonthId, getFeeDueDate, getMonthlyFeeStatus } from "../src/feeLogic.js";
 import { calculateFeeAfterPaymentDelete } from "../src/sessionLogic.js";
+import { calculateFeeAfterPaymentEdit, buildPreviousDueFeeRecord } from "../src/feeLogic.js";
 
 // Firebase docs recommend getFirestore(app) for the default client database.
 // The app is initialized once in ./config before this module requests Firestore.
@@ -303,6 +304,23 @@ export const syncStudentFeeDue = async (studentId) => {
   return totalPending;
 };
 
+export const editFeePayment = async (studentId, monthId, paymentIndex, payment) => {
+  if (!studentId || !monthId) throw new Error("Student ID and month are required");
+  const feeRef = doc(db, "fees", studentId, "months", monthId);
+  const snap = await getDoc(feeRef);
+  if (!snap.exists()) throw new Error("Fee record not found");
+  const updated = calculateFeeAfterPaymentEdit(snap.data(), Number(paymentIndex), payment);
+  await updateDoc(feeRef, {
+    paymentHistory: updated.paymentHistory,
+    paidAmount: updated.paidAmount,
+    pendingAmount: updated.pendingAmount,
+    status: updated.status,
+    updatedAt: new Date().toISOString(),
+  });
+  await syncStudentFeeDue(studentId);
+  return updated;
+};
+
 export const deleteFeePayment = async (studentId, monthId, paymentIndex) => {
   if (!studentId || !monthId) throw new Error("Student ID and month are required");
   const feeRef = doc(db, "fees", studentId, "months", monthId);
@@ -323,6 +341,16 @@ export const deleteFeePayment = async (studentId, monthId, paymentIndex) => {
 export const deleteFeeMonth = async (studentId, monthId) => {
   if (!studentId || !monthId) throw new Error("Student ID and month are required");
   await deleteDoc(doc(db, "fees", studentId, "months", monthId));
+  await syncStudentFeeDue(studentId);
+};
+
+export const deletePreviousDue = async (studentId, monthId) => {
+  if (!studentId || !monthId) throw new Error("Student ID and month are required");
+  const feeRef = doc(db, "fees", studentId, "months", monthId);
+  const snap = await getDoc(feeRef);
+  if (!snap.exists()) throw new Error("Fee record not found");
+  if (snap.data()?.isPreviousDue !== true) throw new Error("This record is not marked as a previous due");
+  await deleteDoc(feeRef);
   await syncStudentFeeDue(studentId);
 };
 
@@ -358,7 +386,7 @@ export const markFeeAsPaid = async (studentId, paidAmount) => {
 
 
 /** Create a fee record for a specific month. */
-export const createFeeMonth = async (studentId, monthId, monthlyFee, paidAmount = 0, dueDate = "", note = "") => {
+export const createFeeMonth = async (studentId, monthId, monthlyFee, paidAmount = 0, dueDate = "", note = "", isPreviousDue = false) => {
   if (!studentId || !monthId) throw new Error("Student ID and month are required");
   const feeRef = doc(db, "fees", studentId, "months", monthId);
   const existing = await getDoc(feeRef);
@@ -368,21 +396,26 @@ export const createFeeMonth = async (studentId, monthId, monthlyFee, paidAmount 
   const paid = Math.min(Math.max(Number(paidAmount) || 0, 0), monthly);
   const pending = Math.max(monthly - paid, 0);
 
-  await setDoc(feeRef, {
-    studentId,
-    monthId,
-    monthlyFee: monthly,
-    dueDate: dueDate || `${monthId}-10`,
-    paidAmount: paid,
-    pendingAmount: pending,
-    status: getMonthlyFeeStatus(monthly, pending, paid),
-    paymentHistory: [],
-    note,
-    createdAt: new Date().toISOString(),
-  });
+  const record = isPreviousDue
+    ? buildPreviousDueFeeRecord({ studentId, monthId, amount: monthly, dueDate, note })
+    : {
+        studentId,
+        monthId,
+        monthlyFee: monthly,
+        dueDate: dueDate || `${monthId}-10`,
+        paidAmount: paid,
+        pendingAmount: pending,
+        status: getMonthlyFeeStatus(monthly, pending, paid),
+        paymentHistory: [],
+        note,
+        isPreviousDue: false,
+        createdAt: new Date().toISOString(),
+      };
+
+  await setDoc(feeRef, record);
 
   await syncStudentFeeDue(studentId);
-  return { id: monthId, studentId, monthId, monthlyFee: monthly, paidAmount: paid, pendingAmount: pending };
+  return { id: monthId, ...record };
 };
 
 /** Edit a monthly fee record while preserving its payment history and paid amount. */

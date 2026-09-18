@@ -52,6 +52,43 @@ test('month-wise fee summary exposes only charge, paid and remaining', () => {
 });
 
 test('fee action pages are distinct routes in the UI model', () => {
-  const pages = ['feePayment', 'feeEdit', 'feeAddPrevious', 'feeDeletePayment', 'feeDeleteMonth'];
-  assert.equal(new Set(pages).size, 5);
+  const pages = ['feePayment', 'feeEditPayment', 'feeEdit', 'feeAddPrevious', 'feeDeletePayment', 'feeDeletePrevious', 'feeDeleteMonth'];
+  assert.equal(new Set(pages).size, 7);
+});
+
+test('editing a payment replaces only that payment and recalculates paid and remaining', async () => {
+  const { calculateFeeAfterPaymentEdit } = await import('../src/feeLogic.js');
+  const result = calculateFeeAfterPaymentEdit(
+    { monthlyFee: 1000, paymentHistory: [
+      { amount: 400, date: '2026-09-01', method: 'Cash' },
+      { amount: 300, date: '2026-09-05', method: 'UPI' },
+    ] },
+    0,
+    { amount: 500, date: '2026-09-10', method: 'UPI', note: 'Edited' }
+  );
+  assert.equal(result.paidAmount, 800);
+  assert.equal(result.pendingAmount, 200);
+  assert.equal(result.status, 'partial');
+  assert.equal(result.paymentHistory[0].amount, 500);
+  assert.equal(result.paymentHistory[0].method, 'UPI');
+});
+
+test('fee summary calculates dues, paid, remaining and collection for a month', async () => {
+  const { summarizeFeeRecords } = await import('../src/feeLogic.js');
+  const result = summarizeFeeRecords([
+    { monthId:'2026-09', monthlyFee:500, paidAmount:500, pendingAmount:0 },
+    { monthId:'2026-09', monthlyFee:700, paidAmount:300, pendingAmount:400 },
+    { monthId:'2026-08', monthlyFee:600, paidAmount:600, pendingAmount:0 },
+  ], '2026-09');
+  assert.deepEqual(result, { dues:1200, paid:800, remaining:400, collected:800, students:2, fullyPaid:1, partial:1, unpaid:0 });
+});
+
+test('previous due records are explicitly identifiable', async () => {
+  const { buildPreviousDueFeeRecord } = await import('../src/feeLogic.js');
+  const fee = buildPreviousDueFeeRecord({ studentId:'S1', monthId:'2026-07', amount:900 });
+  assert.equal(fee.studentId, 'S1');
+  assert.equal(fee.monthId, '2026-07');
+  assert.equal(fee.monthlyFee, 900);
+  assert.equal(fee.pendingAmount, 900);
+  assert.equal(fee.isPreviousDue, true);
 });

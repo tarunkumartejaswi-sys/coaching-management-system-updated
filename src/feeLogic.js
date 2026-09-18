@@ -33,3 +33,49 @@ export function buildMonthlyFeeRecord({ studentId, monthlyFee = 0, date = new Da
     createdAt: new Date().toISOString(),
   };
 }
+
+export function calculateFeeAfterPaymentEdit(fee, paymentIndex, replacementPayment) {
+  const history = Array.isArray(fee?.paymentHistory) ? [...fee.paymentHistory] : [];
+  if (paymentIndex < 0 || paymentIndex >= history.length) throw new Error('Payment not found');
+  const amount = Number(replacementPayment?.amount);
+  if (!Number.isFinite(amount) || amount <= 0) throw new Error('Payment amount must be greater than 0');
+  history[paymentIndex] = { ...history[paymentIndex], ...replacementPayment, amount };
+  const monthlyFee = Math.max(Number(fee?.monthlyFee) || 0, 0);
+  const paidAmount = Math.min(history.reduce((sum, payment) => sum + Math.max(Number(payment?.amount) || 0, 0), 0), monthlyFee);
+  const pendingAmount = Math.max(monthlyFee - paidAmount, 0);
+  return { ...fee, paymentHistory: history, paidAmount, pendingAmount, status: getMonthlyFeeStatus(monthlyFee, pendingAmount, paidAmount) };
+}
+
+export function summarizeFeeRecords(records = [], monthId = '') {
+  const scoped = monthId ? records.filter((fee) => fee?.monthId === monthId) : records;
+  const dues = scoped.reduce((sum, fee) => sum + Math.max(Number(fee?.monthlyFee) || 0, 0), 0);
+  const paid = scoped.reduce((sum, fee) => sum + Math.max(Number(fee?.paidAmount) || 0, 0), 0);
+  const remaining = scoped.reduce((sum, fee) => sum + Math.max(Number(fee?.pendingAmount) || 0, 0), 0);
+  return {
+    dues,
+    paid,
+    remaining,
+    collected: paid,
+    students: scoped.length,
+    fullyPaid: scoped.filter((fee) => Number(fee?.pendingAmount || 0) <= 0 && Number(fee?.monthlyFee || 0) > 0).length,
+    partial: scoped.filter((fee) => Number(fee?.paidAmount || 0) > 0 && Number(fee?.pendingAmount || 0) > 0).length,
+    unpaid: scoped.filter((fee) => Number(fee?.paidAmount || 0) <= 0 && Number(fee?.pendingAmount || 0) > 0).length,
+  };
+}
+
+export function buildPreviousDueFeeRecord({ studentId, monthId, amount = 0, dueDate = '', note = '' } = {}) {
+  const monthly = Math.max(Number(amount) || 0, 0);
+  return {
+    studentId,
+    monthId,
+    monthlyFee: monthly,
+    dueDate: dueDate || `${monthId}-10`,
+    paidAmount: 0,
+    pendingAmount: monthly,
+    status: getMonthlyFeeStatus(monthly, monthly, 0),
+    paymentHistory: [],
+    isPreviousDue: true,
+    note,
+    createdAt: new Date().toISOString(),
+  };
+}
