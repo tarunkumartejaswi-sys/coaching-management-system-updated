@@ -26,13 +26,9 @@ import db, {
   syncStudentFeeDue,
   createFeeMonth,
   updateFeeMonth,
-  getCrChangeRequests,
-  createCrChangeRequest,
-  updateCrChangeRequest,
 } from "../firebase/firestore";
 
 import { getUserProfile } from "../firebase/user";
-import { getCrEligibility, isHomeworkPending } from "./crLogic.js";
 
 /* =========================================================
    TYPES
@@ -65,11 +61,6 @@ type Student = {
   mobile?: string;
   dob?: string;
   gender?: string;
-  isCR?: boolean;
-  crSince?: string;
-  crEligible?: boolean;
-  crEligibleSince?: string;
-  crEligibilityCheckedAt?: string;
 };
 
 type Payment = {
@@ -103,8 +94,6 @@ type Homework = {
   day?: string;
   year?: number;
   createdAt?: string;
-  createdBy?: string;
-  createdByUid?: string;
 };
 
 type TestResult = {
@@ -172,8 +161,6 @@ export default function App() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
 
   const isAdmin = profile?.role === "admin";
-  const isCR = profile?.role === "cr";
-  const isStudentLike = profile?.role === "student" || profile?.role === "cr";
 
   const [studentData, setStudentData] = useState<Student | null>(null);
 
@@ -198,10 +185,6 @@ export default function App() {
 
   const [page, setPage] = useState("dashboard");
   const [studentPage, setStudentPage] = useState("dashboard");
-  const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
-  const [crRequests, setCrRequests] = useState<any[]>([]);
-  const [crMessage, setCrMessage] = useState("");
-  const [crLoading, setCrLoading] = useState(false);
 
   /* =========================================================
      LOGIN
@@ -246,7 +229,6 @@ export default function App() {
   const [homeworkDate, setHomeworkDate] = useState("");
   const [homeworkDueDate, setHomeworkDueDate] = useState("");
   const [savingHomework, setSavingHomework] = useState(false);
-  const [homeworkRequestMode, setHomeworkRequestMode] = useState(false);
 
   /* =========================================================
      TESTS & RESULTS
@@ -453,7 +435,6 @@ export default function App() {
       const history = await getStudentFeeHistory(student.studentId);
       setSelectedFeeStudent(student);
       setSelectedFeeHistory(history);
-      if (isAdmin) setPage("feeDetail");
     } catch (error: any) {
       setFeeMessage(
         `Firebase Error: ${error?.code || "unknown-error"} | ${
@@ -461,17 +442,6 @@ export default function App() {
         }`
       );
     }
-  };
-
-  const openStudentDetails = async (student: Student) => {
-    setSelectedStudent(student);
-    setSelectedFeeStudent(student);
-    if (student.studentId) {
-      try { setSelectedFeeHistory(await getStudentFeeHistory(student.studentId)); }
-      catch (error) { console.error("Unable to load student fee details:", error); setSelectedFeeHistory([]); }
-    }
-    setPage("studentDetail");
-    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const openEditMonthlyFee = (student: Student) => {
@@ -639,7 +609,7 @@ export default function App() {
 
   const saveStudentProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isStudentLike || !studentData?.studentId) return;
+    if (profile?.role !== "student" || !studentData?.studentId) return;
     setProfileSaving(true);
     setProfileMessage("");
     try {
@@ -725,7 +695,7 @@ export default function App() {
 
         setProfile(userProfile);
 
-        if (userProfile?.role === "student" || userProfile?.role === "cr") {
+        if (userProfile?.role === "student") {
           const ownStudent = await getStudentById(userProfile.studentId);
 
           setStudentData(ownStudent);
@@ -1104,14 +1074,14 @@ export default function App() {
   };
 
   const openAddHomework = () => {
-    if (!isAdmin && !isCR) return;
+    if (!isAdmin) return;
     resetHomeworkForm();
     setHomeworkDate(new Date().toISOString().slice(0, 10));
     setShowHomeworkForm(true);
   };
 
   const openEditHomework = (item: Homework) => {
-    if (!isAdmin && !isCR) return;
+    if (!isAdmin) return;
     setEditingHomework(item);
     setHomeworkClass(item.className || "");
     setHomeworkBatch(item.batch || "");
@@ -1128,8 +1098,8 @@ export default function App() {
 
   const saveHomework = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isAdmin && !isCR) {
-      setHomeworkMessage("Only Admin or an assigned Class Representative can manage homework.");
+    if (!isAdmin) {
+      setHomeworkMessage("Only the admin can manage homework.");
       return;
     }
     if (!homeworkClass || !homeworkTitle.trim() || !homeworkDescription.trim() || !homeworkDate) {
@@ -1150,24 +1120,13 @@ export default function App() {
       completion: homeworkCompletion,
       day: selectedDate.toLocaleDateString("en-IN", { weekday: "long" }),
       year: selectedDate.getFullYear(),
-      createdBy: profile?.name || (isCR ? "Class Representative" : "Admin"),
-      createdByUid: user?.uid || "",
+      createdBy: profile?.name || "Admin",
     };
 
     setSavingHomework(true);
     setHomeworkMessage("");
     try {
-      if (isCR) {
-        await createCrChangeRequest({
-          type: editingHomework?.id ? "homework_edit" : "homework_add",
-          targetId: editingHomework?.id || "",
-          studentId: profile?.studentId || "",
-          submittedBy: user?.uid || "",
-          submittedByName: profile?.name || "Class Representative",
-          payload,
-        });
-        setHomeworkMessage(editingHomework?.id ? "Homework edit sent to Admin for approval. ⏳" : "Homework request sent to Admin for approval. ⏳");
-      } else if (editingHomework?.id) {
+      if (editingHomework?.id) {
         await updateHomework(editingHomework.id, payload);
         setHomeworkMessage("Homework updated successfully! ✅");
       } else {
@@ -1189,20 +1148,12 @@ export default function App() {
   };
 
   const removeHomework = async (item: Homework) => {
-    if ((!isAdmin && !isCR) || !item.id) return;
+    if (!isAdmin || !item.id) return;
     if (!window.confirm(`Delete homework: ${item.title || "this homework"}?`)) return;
     try {
-      if (isCR) {
-        await createCrChangeRequest({
-          type: "homework_delete", targetId: item.id, studentId: profile?.studentId || "",
-          submittedBy: user?.uid || "", submittedByName: profile?.name || "Class Representative", payload: { homework: item },
-        });
-        setHomeworkMessage("Homework deletion sent to Admin for approval. ⏳");
-      } else {
-        await deleteHomework(item.id);
-        await loadHomework();
-        setHomeworkMessage("Homework deleted successfully. 🗑️");
-      }
+      await deleteHomework(item.id);
+      await loadHomework();
+      setHomeworkMessage("Homework deleted successfully. 🗑️");
     } catch (error: any) {
       console.error("Homework delete error:", error);
       setHomeworkMessage(
@@ -1213,176 +1164,9 @@ export default function App() {
     }
   };
 
-  const loadCrRequests = async () => {
-    try {
-      const requests = await getCrChangeRequests(isAdmin ? "" : (user?.uid || ""));
-      setCrRequests(requests);
-    } catch (error: any) {
-      console.error("CR request loading error:", error);
-      setCrMessage(`Unable to load CR requests: ${error?.message || "Unknown error"}`);
-    }
-  };
-
   useEffect(() => {
-    if (page === "homework" && (isAdmin || isCR)) loadHomework();
-    if ((page === "homework" || page === "attendance" || page === "cr") && (isAdmin || isCR)) loadCrRequests();
-  }, [page, isAdmin, isCR]);
-
-  /* =========================================================
-     CLASS REPRESENTATIVE WORKFLOW
-  ========================================================= */
-
-  const getStudentCrMetrics = (student: Student) => {
-    const rank = getStudentRanking().find((item) => item.studentId === student.studentId)?.rank ?? Infinity;
-    const average = Number(studentAverageMap()[student.studentId || ""] || student.average || 0);
-    const attendanceStats = getAttendanceStats(student.studentId, student.authUid);
-    const pendingHomework = homeworkForStudent(student).filter((item) => isHomeworkPending(item, student.studentId || "")).length;
-    return {
-      rank,
-      average,
-      attendance: attendanceStats.percentage,
-      feeDue: student.studentId === studentData?.studentId
-        ? studentFeeHistory.reduce((sum, fee) => sum + Number(fee.pendingAmount || 0), 0)
-        : Number(student.feeDue || 0),
-      pendingHomework,
-    };
-  };
-
-  const getStudentCrEligibility = (student: Student) => getCrEligibility(getStudentCrMetrics(student));
-
-  const applyApprovedCrRequest = async (request: any) => {
-    if (!isAdmin || !request?.id) return;
-    if (request.type === "attendance_update") {
-      const payload = request.payload || {};
-      await setDoc(doc(db, "attendance", request.targetId), {
-        ...payload,
-        updatedAt: new Date().toISOString(),
-        approvedFromCrRequest: request.id,
-      }, { merge: true });
-      const attendanceSnapshot = await getDocs(query(collection(db, "attendance"), orderBy("date", "desc")));
-      const days = attendanceSnapshot.docs.map((item: any) => item.data()) as AttendanceDay[];
-      await Promise.all(students.filter((student) => student.studentId).map(async (student) => {
-        const rows = days.filter((row) => row.records && Object.prototype.hasOwnProperty.call(row.records, student.studentId!));
-        const present = rows.filter((row) => row.records?.[student.studentId!] === "present").length;
-        const percentage = rows.length ? Number(((present / rows.length) * 100).toFixed(1)) : 0;
-        await updateDoc(doc(db, "students", student.studentId!), { attendance: percentage });
-      }));
-    } else if (request.type === "homework_add") {
-      await addHomework(request.payload || {});
-    } else if (request.type === "homework_edit") {
-      await updateHomework(request.targetId, request.payload || {});
-    } else if (request.type === "homework_delete") {
-      await deleteHomework(request.targetId);
-    } else if (request.type === "homework_completion") {
-      await updateHomework(request.targetId, request.payload || {});
-    } else if (request.type === "cr_application") {
-      const student = students.find((item) => item.studentId === request.studentId);
-      if (!student?.studentId || !student.authUid) throw new Error("Student account details not found.");
-      const crSince = new Date().toISOString();
-      await updateDoc(doc(db, "users", student.authUid), { role: "cr" });
-      await updateDoc(doc(db, "students", student.studentId), { isCR: true, crSince });
-      await setDoc(doc(db, "studentDirectory", student.studentId), {
-        studentId: student.studentId, name: student.name || "", className: student.className || "", batch: student.batch || "",
-        isCR: true, crSince, crEligible: true,
-      }, { merge: true });
-    }
-  };
-
-  const reviewCrRequest = async (request: any, approved: boolean) => {
-    if (!isAdmin || !request?.id) return;
-    setCrLoading(true);
-    setCrMessage("");
-    try {
-      if (approved) await applyApprovedCrRequest(request);
-      await updateCrChangeRequest(request.id, { status: approved ? "approved" : "rejected", reviewedBy: user?.uid || "", reviewedByName: profile?.name || "Admin" });
-      await loadCrRequests();
-      await loadHomework();
-      await loadAttendance();
-      if (approved && request.type === "cr_application") {
-        const updatedStudents = await getStudents();
-        setStudents(updatedStudents);
-      }
-      setCrMessage(approved ? "CR request approved successfully. ✅" : "CR request rejected.");
-    } catch (error: any) {
-      console.error("CR request review error:", error);
-      setCrMessage(`Unable to review CR request: ${error?.message || "Unknown error"}`);
-    } finally {
-      setCrLoading(false);
-    }
-  };
-
-  const assignCrDirectly = async (student: Student) => {
-    if (!isAdmin || !student.studentId || !student.authUid) return;
-    if (!window.confirm(`Make ${student.name || student.studentId} a Class Representative?`)) return;
-    setCrLoading(true);
-    try {
-      const crSince = new Date().toISOString();
-      await updateDoc(doc(db, "users", student.authUid), { role: "cr" });
-      await updateDoc(doc(db, "students", student.studentId), { isCR: true, crSince });
-      await setDoc(doc(db, "studentDirectory", student.studentId), {
-        studentId: student.studentId, name: student.name || "", className: student.className || "", batch: student.batch || "",
-        isCR: true, crSince, crEligible: getStudentCrEligibility(student).eligible,
-      }, { merge: true });
-      setStudents(await getStudents());
-      await loadCrRequests();
-      setCrMessage(`${student.name || student.studentId} is now a Class Representative. ⭐`);
-    } catch (error: any) {
-      setCrMessage(`Unable to assign CR: ${error?.message || "Unknown error"}`);
-    } finally { setCrLoading(false); }
-  };
-
-  const removeCr = async (student: Student) => {
-    if (!isAdmin || !student.studentId || !student.authUid) return;
-    if (!window.confirm(`Remove CR role from ${student.name || student.studentId}?`)) return;
-    setCrLoading(true);
-    try {
-      await updateDoc(doc(db, "users", student.authUid), { role: "student" });
-      await updateDoc(doc(db, "students", student.studentId), { isCR: false });
-      await setDoc(doc(db, "studentDirectory", student.studentId), { isCR: false }, { merge: true });
-      setStudents(await getStudents());
-      setCrMessage("CR role removed. The student login remains active.");
-    } catch (error: any) { setCrMessage(`Unable to remove CR: ${error?.message || "Unknown error"}`); }
-    finally { setCrLoading(false); }
-  };
-
-  const applyForCr = async () => {
-    const eligibility = studentData ? getStudentCrEligibility(studentData) : { eligible: false, failedCriteria: [] };
-    const hasPending = crRequests.some((r: any) => r.type === "cr_application" && r.studentId === studentData?.studentId && r.status === "pending");
-    if (!isStudentLike || !studentData?.studentId || !eligibility.eligible || hasPending) return;
-    setCrLoading(true);
-    try {
-      await createCrChangeRequest({
-        type: "cr_application", studentId: studentData.studentId, submittedBy: user?.uid || "", submittedByName: profile?.name || studentData.name || "Student",
-        payload: { eligibility, appliedAt: new Date().toISOString() },
-      });
-      await loadCrRequests();
-      setCrMessage("Your CR application has been sent to Admin. ⏳");
-    } catch (error: any) { setCrMessage(`Unable to submit CR application: ${error?.message || "Unknown error"}`); }
-    finally { setCrLoading(false); }
-  };
-
-  const syncCrEligibility = async () => {
-    if (!isAdmin) return;
-    const freshStudents = await getStudents();
-    if (freshStudents.length === 0) return;
-    setStudents(freshStudents);
-    const checkedAt = new Date().toISOString();
-    await Promise.all(freshStudents.filter(s => s.studentId).map(async (student) => {
-      const eligibility = getStudentCrEligibility(student).eligible;
-      const directory = directoryStudents.find(d => d.studentId === student.studentId);
-      const patch: any = { crEligible: eligibility, crEligibilityCheckedAt: checkedAt };
-      if (eligibility && !directory?.crEligible) patch.crEligibleSince = checkedAt;
-      await updateDoc(doc(db, "students", student.studentId!), { crEligible: eligibility, crEligibilityCheckedAt: checkedAt });
-      await setDoc(doc(db, "studentDirectory", student.studentId!), {
-        studentId: student.studentId, name: student.name || "", className: student.className || "", batch: student.batch || "",
-        isCR: Boolean(student.isCR), ...patch,
-      }, { merge: true });
-    }));
-  };
-
-  useEffect(() => {
-    if (page === "cr" && isAdmin) { loadFees(); syncCrEligibility().catch((error) => console.error("CR eligibility sync error:", error)); }
-  }, [page, isAdmin, students.length]);
+    if (page === "homework" && isAdmin) loadHomework();
+  }, [page, isAdmin]);
 
   /* =========================================================
      TEACHERS
@@ -1515,18 +1299,9 @@ export default function App() {
   };
 
   const saveAttendance = async () => {
-    if ((!isAdmin && !isCR) || !attendanceDate) return;
+    if (!isAdmin || !attendanceDate) return;
     const d = new Date(`${attendanceDate}T12:00:00`);
     try {
-      if (isCR) {
-        await createCrChangeRequest({
-          type: "attendance_update", targetId: attendanceDate, studentId: profile?.studentId || "",
-          submittedBy: user?.uid || "", submittedByName: profile?.name || "Class Representative",
-          payload: { date: attendanceDate, day: d.toLocaleDateString("en-IN", { weekday: "long" }), year: d.getFullYear(), records: attendanceRecords },
-        });
-        setAttendanceMessage("Attendance changes sent to Admin for approval. ⏳");
-        return;
-      }
       await setDoc(doc(db, "attendance", attendanceDate), {
         date: attendanceDate, day: d.toLocaleDateString("en-IN", { weekday: "long" }), year: d.getFullYear(),
         records: attendanceRecords, updatedAt: new Date().toISOString()
@@ -1548,8 +1323,7 @@ export default function App() {
 
   const setAllAttendance = (status: "present" | "absent") => {
     const next: Record<string, "present" | "absent"> = {};
-    const roster = students.length ? students : directoryStudents;
-    roster.forEach((student) => { if (student.studentId) next[student.studentId] = status; });
+    students.forEach((student) => { if (student.studentId) next[student.studentId] = status; });
     setAttendanceRecords(next);
   };
 
@@ -1937,7 +1711,7 @@ export default function App() {
      STUDENT DASHBOARD
   ========================================================= */
 
-  if (profile?.role === "student" || profile?.role === "cr") {
+  if (profile?.role === "student") {
     const studentSid = studentData?.studentId || profile.studentId || "";
     const myAttendance = getAttendanceStats(studentSid, studentData?.authUid);
     const ranking = getStudentRanking();
@@ -1948,16 +1722,7 @@ export default function App() {
       return Boolean(result?.present && result.marks !== null && result.marks !== undefined);
     });
     const myHomework = homeworkForStudent(studentData);
-    const pendingHomework = myHomework.filter((item) => isHomeworkPending(item, studentSid));
-    const totalFeePending = studentFeeHistory.reduce((sum, fee) => sum + Number(fee.pendingAmount || 0), 0);
-    const crEligibility = getCrEligibility({
-      feeDue: totalFeePending,
-      attendance: myAttendance.percentage,
-      rank: myRank?.rank ?? Infinity,
-      average: myAverage,
-      pendingHomework: pendingHomework.length,
-    });
-    const hasPendingCrApplication = crRequests.some((r: any) => r.type === "cr_application" && r.studentId === studentSid && r.status === "pending");
+    const pendingHomework = myHomework.filter((item) => !Boolean(((item as any).completion || {})[studentSid]));
     const recordedAttendance = attendanceDays.filter((d) => Boolean(getStudentAttendanceStatus(d, studentSid, studentData?.authUid)));
     const presentDays = recordedAttendance.filter((d) => getStudentAttendanceStatus(d, studentSid, studentData?.authUid) === "present").length;
     const absentDays = recordedAttendance.filter((d) => getStudentAttendanceStatus(d, studentSid, studentData?.authUid) === "absent").length;
@@ -2002,7 +1767,6 @@ export default function App() {
       fees: "Fees",
       notices: "Notices",
       director: "Director",
-      cr: "Class Representative",
     };
 
     return (
@@ -2012,7 +1776,7 @@ export default function App() {
             <div style={styles.brandMark}>🎓</div>
             <div>
               <h2 style={{ margin: 0, fontSize: 18 }}>Coaching Management System</h2>
-              <p style={styles.topbarSub}>{isCR ? "Class Representative Portal" : "Student Portal"} · {studentData?.className || "Class not set"}</p>
+              <p style={styles.topbarSub}>Student Portal · {studentData?.className || "Class not set"}</p>
             </div>
           </div>
           <div style={styles.topbarActions}>
@@ -2029,13 +1793,7 @@ export default function App() {
         <div style={styles.studentShell}>
           <aside style={styles.studentSidebar}>
             <div style={styles.studentNavLabel}>STUDENT PORTAL</div>
-            {(isCR ? [
-              ["dashboard", "🏠", "Dashboard"],
-              ["profile", "👤", "My Profile"],
-              ["attendance", "📅", "Attendance"],
-              ["homework", "📚", "Homework"],
-              ["cr", "⭐", "Class Representative"],
-            ] : [
+            {[
               ["dashboard", "🏠", "Dashboard"],
               ["profile", "👤", "My Profile"],
               ["attendance", "📅", "Attendance"],
@@ -2044,8 +1802,7 @@ export default function App() {
               ["fees", "💰", "Fees"],
               ["notices", "📢", "Notices"],
               ["director", "🎓", "Director"],
-              ["cr", "⭐", "Class Representative"],
-            ]).map(([key, icon, label]) => (
+            ].map(([key, icon, label]) => (
               <button key={key} style={studentPage === key ? styles.studentNavActive : styles.studentNav}
                 onClick={() => goStudent(key)}>
                 <span>{icon}</span><span>{label}</span>
@@ -2062,7 +1819,7 @@ export default function App() {
           <main style={styles.studentMain}>
             <div style={styles.studentPageHeader}>
               <div>
-                <span style={styles.heroEyebrow}>{isCR ? "CLASS REPRESENTATIVE PORTAL" : "STUDENT PORTAL"}</span>
+                <span style={styles.heroEyebrow}>STUDENT PORTAL</span>
                 <h1 style={{ margin: "5px 0 2px" }}>{studentPageTitle[studentPage]}</h1>
                 <p style={styles.muted}>{studentData?.name || "Student"} · {studentData?.className || "Class not set"}{studentData?.batch ? ` · ${studentData.batch}` : ""}</p>
               </div>
@@ -2229,29 +1986,6 @@ export default function App() {
                 <h3>📜 Payment History</h3>
                 {studentFeeHistory.length===0?<div style={styles.emptyBox}>No fee history available.</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Month</th><th style={styles.th}>Fee</th><th style={styles.th}>Paid</th><th style={styles.th}>Due</th><th style={styles.th}>Status</th><th style={styles.th}>Payment Date(s)</th></tr></thead><tbody>{studentFeeHistory.map(f=> <tr key={f.id}><td style={styles.td}>{f.monthId||"-"}</td><td style={styles.td}>₹{f.monthlyFee||0}</td><td style={styles.td}>₹{f.paidAmount||0}</td><td style={styles.td}>₹{f.pendingAmount||0}</td><td style={styles.td}><span style={f.status==="paid"?styles.paidBadge:f.status==="partial"?styles.partialBadge:styles.pendingBadge}>{f.status==="paid"?"🟢 Paid":f.status==="partial"?"🟠 Partial":"🔴 Due"}</span></td><td style={styles.td}>{(f.paymentHistory||[]).map((p,i)=><div key={i}>{p.date}{p.method?` · ${p.method}`:""} · ₹{p.amount}</div>)}</td></tr>)}</tbody></table></div>}
               </div>
-            )}
-
-            {studentPage === "cr" && (
-              <>
-                <div style={styles.card}>
-                  <div style={styles.sectionTitleRow}><div><h2>⭐ Class Representative</h2><p style={styles.muted}>Your class representative and CR eligibility status.</p></div>{studentData?.isCR && <span style={styles.paidBadge}>⭐ CURRENT CR</span>}</div>
-                  {(() => { const classCrs = directoryStudents.filter(s => s.isCR && s.className === studentData?.className && (!studentData?.batch || !s.batch || s.batch === studentData?.batch)); return classCrs.length ? <div style={styles.crPublicGrid}>{classCrs.map(cr => <div key={cr.studentId} style={styles.crPublicCard}><div style={styles.avatarLarge}>{cr.photoUrl ? <img src={cr.photoUrl} alt="Class Representative" style={styles.avatarImage}/> : "⭐"}</div><div><h3 style={{margin:"0 0 4px"}}>{cr.name}</h3><p style={styles.muted}>{cr.className}{cr.batch ? ` · ${cr.batch}` : ""}</p><span style={styles.paidBadge}>CLASS REPRESENTATIVE</span>{cr.crSince && <small style={{display:"block",marginTop:8,color:"#64748b"}}>CR since {new Date(cr.crSince).toLocaleDateString("en-IN")}</small>}</div></div>)}</div> : <div style={styles.emptyBox}>No Class Representative has been assigned to your class yet.</div>; })()}
-                </div>
-                <div className="card" style={styles.card}>
-                  <div style={styles.sectionTitleRow}><div><h2>📋 My CR Eligibility</h2><p style={styles.muted}>All five criteria must be satisfied before you can apply.</p></div><span style={crEligibility.eligible ? styles.paidBadge : styles.pendingBadge}>{crEligibility.eligible ? "ELIGIBLE" : "NOT ELIGIBLE"}</span></div>
-                  <div style={styles.eligibilityList}>
-                    <div style={styles.eligibilityRow}><span>{totalFeePending === 0 ? "✅" : "❌"}</span><strong>Fee pending = ₹0</strong><small>₹{totalFeePending.toLocaleString("en-IN")} pending</small></div>
-                    <div style={styles.eligibilityRow}><span>{myAttendance.percentage > 90 ? "✅" : "❌"}</span><strong>Attendance &gt; 90%</strong><small>{myAttendance.percentage.toFixed(1)}%</small></div>
-                    <div style={styles.eligibilityRow}><span>{myRank && myRank.rank >= 1 && myRank.rank <= 5 ? "✅" : "❌"}</span><strong>Rank 1–5</strong><small>{myRank ? `#${myRank.rank}` : "Not ranked"}</small></div>
-                    <div style={styles.eligibilityRow}><span>{myAverage > 80 ? "✅" : "❌"}</span><strong>Average &gt; 80%</strong><small>{myAverage.toFixed(1)}%</small></div>
-                    <div style={styles.eligibilityRow}><span>{pendingHomework.length === 0 ? "✅" : "❌"}</span><strong>No pending homework</strong><small>{pendingHomework.length === 0 ? "All due work done" : `${pendingHomework.length} pending`}</small></div>
-                  </div>
-                  {!studentData?.isCR && crEligibility.eligible && <div style={styles.formActions}><button style={styles.primaryButtonSmall} disabled={crLoading || hasPendingCrApplication} onClick={applyForCr}>{hasPendingCrApplication ? "⏳ Application Pending" : "⭐ Apply for CR"}</button></div>}
-                  {!studentData?.isCR && !crEligibility.eligible && <div style={styles.infoNotice}>Complete all five criteria to unlock the CR application.</div>}
-                  {studentData?.isCR && <div style={styles.paidNotice}>⭐ You are an active Class Representative. Attendance and homework changes you submit require Admin approval.</div>}
-                  {crMessage && <div style={crMessage.includes("sent") ? styles.infoNotice : styles.errorBox}>{crMessage}</div>}
-                </div>
-              </>
             )}
 
             {studentPage === "notices" && (
@@ -2690,11 +2424,12 @@ export default function App() {
                     <th style={styles.th}>Batch</th>
 
                     <th style={styles.th}>Attendance</th>
-                    <th style={styles.th}>Average</th>
-                    <th style={styles.th}>Rank</th>
-                    <th style={styles.th}>CR</th>
+
+
                     <th style={styles.th}>Monthly Fee</th>
+
                     <th style={styles.th}>Fee Due</th>
+
                     <th style={styles.th}>Action</th>
                   </tr>
                 </thead>
@@ -2704,21 +2439,15 @@ export default function App() {
                     <tr key={student.studentId || student.id}>
                       <td style={styles.td}>{student.studentId || "-"}</td>
 
-                      <td style={styles.td}>
-                        <button type="button" style={styles.feeStudentButton} onClick={() => openStudentDetails(student)} title="Open full student details">
-                          <span style={styles.feeAvatar}>{(student.name || "?").trim().charAt(0).toUpperCase()}</span>
-                          <span><strong>{student.name || "-"}</strong><small style={styles.feeStudentHint}>View complete profile</small></span>
-                        </button>
-                      </td>
+                      <td style={styles.td}>{student.name || "-"}</td>
 
                       <td style={styles.td}>{student.className || "-"}</td>
 
                       <td style={styles.td}>{student.batch || "-"}</td>
 
                       <td style={styles.td}>{student.attendance ?? 0}%</td>
-                      <td style={styles.td}>{Number(studentAverageMap()[student.studentId || ""] || student.average || 0).toFixed(1)}%</td>
-                      <td style={styles.td}>{(() => { const r=getStudentRanking().find(x=>x.studentId===student.studentId); return r ? `#${r.rank}` : "—"; })()}</td>
-                      <td style={styles.td}>{student.isCR ? <span style={styles.paidBadge}>⭐ CR</span> : "—"}</td>
+
+
                       <td style={styles.td}>
                         ₹{student.monthlyFee ?? student.feeDue ?? 0}
                       </td>
@@ -2773,76 +2502,15 @@ export default function App() {
   };
 
   /* =========================================================
-     STUDENT / FEE DETAIL PAGES
-  ========================================================= */
-
-  const studentDetailPage = (student: Student) => {
-    const historyForStudentDetail = selectedStudent?.studentId === student.studentId ? selectedFeeHistory : [];
-    const stats = getAttendanceStats(student.studentId, student.authUid);
-    const average = Number(studentAverageMap()[student.studentId || ""] || student.average || 0);
-    const ranking = getStudentRanking().find((item) => item.studentId === student.studentId);
-    const studentHomework = homeworkForStudent(student);
-    const pending = studentHomework.filter((item) => isHomeworkPending(item, student.studentId || "")).length;
-    const feePendingDetail = historyForStudentDetail.reduce((sum, fee) => sum + Number(fee.pendingAmount || 0), 0);
-    const eligibility = getCrEligibility({ ...getStudentCrMetrics(student), feeDue: feePendingDetail, pendingHomework: pending, attendance: stats.percentage, average, rank: ranking?.rank ?? Infinity });
-    return <>
-      <div style={styles.pageHeader}>
-        <div><button style={styles.textButton} onClick={() => setPage("students")}>← Back to Students</button><h1>👤 {student.name || "Student Details"}</h1><p style={styles.muted}>{student.studentId} · {student.className || "Class not set"}{student.batch ? ` · ${student.batch}` : ""}</p></div>
-        {isAdmin && <button style={student.isCR ? styles.deleteButton : styles.primaryButtonSmall} onClick={() => student.isCR ? removeCr(student) : assignCrDirectly(student)}>{student.isCR ? "Remove CR" : "⭐ Make CR"}</button>}
-      </div>
-      <div style={styles.card}><div style={styles.profileHero}><div style={styles.avatarLarge}>{student.photoUrl ? <img src={student.photoUrl} alt="Student" style={styles.avatarImage}/> : "👤"}</div><div><h2 style={{margin:0}}>{student.name || "Student"}</h2><p style={styles.muted}>{student.email || "No email"} · {student.mobile || "No mobile"}</p>{student.isCR && <span style={styles.noticeBadge}>⭐ CLASS REPRESENTATIVE</span>}</div></div></div>
-      <div style={styles.grid}><StatCard title="Attendance" value={`${stats.percentage.toFixed(0)}%`} icon="📅"/><StatCard title="Average" value={average ? `${average.toFixed(1)}%` : "—"} icon="📊"/><StatCard title="Rank" value={ranking ? `#${ranking.rank}` : "—"} icon="🏆"/><StatCard title="Pending Homework" value={String(pending)} icon="📚"/><StatCard title="Fee Pending" value={`₹${feePendingDetail.toLocaleString("en-IN")}`} icon="💰"/></div>
-      <div style={styles.twoColumn}>
-        <div style={styles.card}><h2>🪪 Personal Details</h2>{[["Student ID",student.studentId],["Father's Name",student.fatherName],["Mother's Name",student.motherName],["Date of Birth",student.dob],["Gender",student.gender],["Mobile",student.mobile],["Email",student.email],["Address",student.address]].map(([label,value])=><div key={label} style={styles.infoRow}><span style={styles.infoLabel}>{label}</span><strong>{value || "Not provided"}</strong></div>)}</div>
-        <div style={styles.card}><h2>⭐ CR Eligibility</h2><p style={styles.muted}>All five conditions must be satisfied for student application.</p><div style={styles.eligibilityList}>{[["Fee pending = ₹0",feePendingDetail===0],["Attendance > 90%",stats.percentage>90],["Rank 1–5",Boolean(ranking && ranking.rank>=1 && ranking.rank<=5)],["Average > 80%",average>80],["No pending homework",pending===0]].map(([label,ok])=><div key={label} style={styles.eligibilityRow}><span>{ok ? "✅" : "❌"}</span><strong>{label}</strong><small>{ok ? "Satisfied" : "Not satisfied"}</small></div>)}</div>{student.isCR ? <div style={styles.paidNotice}>⭐ This student is currently a Class Representative.</div> : <div style={styles.infoNotice}>{eligibility.eligible ? "Eligible to apply for CR." : `Not eligible yet. ${eligibility.failedCriteria.length} condition(s) remain.`}</div>}</div>
-      </div>
-      <div style={styles.card}><h2>📝 Test Results</h2><div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Test</th><th style={styles.th}>Subject</th><th style={styles.th}>Date</th><th style={styles.th}>Marks</th><th style={styles.th}>%</th></tr></thead><tbody>{tests.filter(t => (t.results || {})[student.studentId || ""]).map(t=>{const r=(t.results||{})[student.studentId||""];const pct=r?.present&&r.marks!=null?(Number(r.marks)/Number(t.total||1))*100:null;return <tr key={t.id}><td style={styles.td}>{t.name}</td><td style={styles.td}>{t.subject}</td><td style={styles.td}>{t.date}</td><td style={styles.td}>{r?.present?`${r.marks ?? "—"} / ${t.total}`:"Absent"}</td><td style={styles.td}>{pct==null?"—":`${pct.toFixed(1)}%`}</td></tr>})}</tbody></table></div></div>
-      <div style={styles.card}><h2>💰 Fee Record</h2>{historyForStudentDetail.length===0?<div style={styles.emptyBox}>No fee history recorded.</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Month</th><th style={styles.th}>Fee</th><th style={styles.th}>Paid</th><th style={styles.th}>Pending</th><th style={styles.th}>Status</th></tr></thead><tbody>{historyForStudentDetail.map(f=><tr key={f.id}><td style={styles.td}>{f.monthId}</td><td style={styles.td}>₹{f.monthlyFee||0}</td><td style={styles.td}>₹{f.paidAmount||0}</td><td style={styles.td}>₹{f.pendingAmount||0}</td><td style={styles.td}><span style={f.status==="paid"?styles.paidBadge:f.status==="partial"?styles.partialBadge:styles.pendingBadge}>{f.status==="paid"?"🟢 Paid":f.status==="partial"?"🟠 Partial":"🔴 Due"}</span></td></tr>)}</tbody></table></div>}</div>
-      <div style={styles.card}><h2>📚 Homework</h2>{studentHomework.length===0?<div style={styles.emptyBox}>No homework assigned.</div>:studentHomework.map(item=>{const done=Boolean(((item as any).completion||{})[student.studentId||""]);return <div key={item.id} style={styles.noticeCompact}><strong>{item.subject ? `${item.subject}: ` : ""}{item.title}</strong><span style={{marginLeft:10}}>{done ? "✅ Done" : "⚠ Pending"}</span><p style={{margin:"5px 0 0"}}>{item.description}</p></div>})}</div>
-    </>;
-  };
-
-  const feeDetailPage = (student: Student, history: Fee[]) => {
-    const totalCharged = history.reduce((sum, fee) => sum + Number(fee.monthlyFee || 0), 0);
-    const totalPaid = history.reduce((sum, fee) => sum + Number(fee.paidAmount || 0), 0);
-    const totalPending = history.reduce((sum, fee) => sum + Number(fee.pendingAmount || 0), 0);
-    const status = totalPending === 0 ? "paid" : totalPaid > 0 ? "partial" : "pending";
-    const percent = totalCharged > 0 ? Math.min(100, Math.round((totalPaid / totalCharged) * 100)) : 100;
-    return <>
-      <div style={styles.pageHeader}><div><button style={styles.textButton} onClick={() => { setSelectedFeeStudent(null); setPage("fees"); }}>← Back to Fees</button><h1>💰 Fee Details</h1><p style={styles.muted}>{student.name} · {student.studentId} · {student.className}{student.batch ? ` · ${student.batch}` : ""}</p></div><span style={status === "paid" ? styles.paidBadge : status === "partial" ? styles.partialBadge : styles.pendingBadge}>{status === "paid" ? "🟢 PAID" : status === "partial" ? "🟠 PARTIAL" : "🔴 DUE"}</span></div>
-      <div style={styles.card}><div style={styles.feeDetailHero}><div><span style={styles.smallLabel}>TOTAL FEE</span><h2 style={{margin:"3px 0"}}>₹{totalCharged.toLocaleString("en-IN")}</h2><p style={styles.muted}>Complete fee record for {student.name}</p></div><div style={styles.feeDetailMetrics}><div><span style={styles.smallLabel}>TOTAL PAID</span><strong style={{color:"#15803d"}}>₹{totalPaid.toLocaleString("en-IN")}</strong></div><div><span style={styles.smallLabel}>TOTAL PENDING</span><strong style={{color:totalPending===0?"#15803d":"#b91c1c"}}>₹{totalPending.toLocaleString("en-IN")}</strong></div><div><span style={styles.smallLabel}>COLLECTION</span><strong>{percent}%</strong></div></div><div style={{...styles.progressTrack,marginTop:14}}><div style={{...styles.progressFill,width:`${percent}%`}}/></div>{totalPending===0&&<div style={styles.paidNotice}>✅ All recorded dues are cleared. Overall status: <strong>PAID</strong>.</div>}</div></div>
-      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📅 Month-wise Fee Details</h2><p style={styles.muted}>Every recorded month, payment and remaining balance.</p></div>{isAdmin&&<button style={styles.primaryButtonSmall} onClick={()=>openAddFeeMonth(student)}>➕ Add Month</button>}</div>{history.length===0?<div style={styles.emptyBox}>No fee history available.</div>:history.map(f=><div key={f.id} style={styles.monthFeeCard}><div style={styles.sectionTitleRow}><strong>{f.monthId}</strong><span style={f.status==="paid"?styles.paidBadge:f.status==="partial"?styles.partialBadge:styles.pendingBadge}>{f.status==="paid"?"🟢 Paid":f.status==="partial"?"🟠 Partial":"🔴 Due"}</span></div><div style={styles.feeHistoryGrid}><div><span style={styles.smallLabel}>Fee</span><strong>₹{f.monthlyFee||0}</strong></div><div><span style={styles.smallLabel}>Paid</span><strong>₹{f.paidAmount||0}</strong></div><div><span style={styles.smallLabel}>Pending</span><strong>₹{f.pendingAmount||0}</strong></div><div><span style={styles.smallLabel}>Due Date</span><strong>{f.dueDate||"—"}</strong></div></div><div style={{marginTop:10}}><span style={styles.smallLabel}>Payment History</span>{(f.paymentHistory||[]).length===0?<span style={styles.muted}>No payments recorded.</span>:(f.paymentHistory||[]).map((p,i)=><div key={i} style={styles.paymentHistoryRow}><strong>₹{p.amount}</strong><span>{new Date(p.date).toLocaleString("en-IN")}</span><span>{p.method||"—"}</span><span>{p.note||""}</span></div>)}</div>{isAdmin&&<div style={styles.formActions}><button style={styles.editButton} onClick={()=>openEditHistoryFee(student,f)}>✏️ Edit Month</button></div>}</div>)}</div>
-    </>;
-  };
-
-  /* =========================================================
-     CLASS REPRESENTATIVE ADMIN PAGE
-  ========================================================= */
-
-  const crAdminPage = () => {
-    const ranking = getStudentRanking();
-    const pendingRequests = crRequests.filter((r: any) => r.status === "pending");
-    return <>
-      <div style={styles.pageHeader}><div><h1>⭐ Class Representative</h1><p style={styles.muted}>Track eligibility, applications and Admin assignments.</p></div></div>
-      {crMessage&&<div style={crMessage.includes("successfully")||crMessage.includes("now") ? styles.successBox : styles.errorBox}>{crMessage}</div>}
-      <div style={styles.grid}><StatCard title="Current CRs" value={String(students.filter(s=>s.isCR).length)} icon="⭐"/><StatCard title="Eligible" value={String(students.filter(s=>getStudentCrEligibility(s).eligible).length)} icon="✅"/><StatCard title="Applications" value={String(pendingRequests.filter((r:any)=>r.type==="cr_application").length)} icon="📨"/><StatCard title="Approval Requests" value={String(pendingRequests.filter((r:any)=>r.type!=="cr_application").length)} icon="⏳"/></div>
-      <div style={styles.card}><h2>📨 Pending CR Requests</h2>{pendingRequests.length===0?<div style={styles.emptyBox}>No pending CR requests.</div>:pendingRequests.map((r:any)=><div key={r.id} style={styles.requestCard}><div><strong>{r.type.replaceAll("_"," ").toUpperCase()}</strong><p style={{margin:"5px 0"}}>{r.submittedByName || r.studentId || "CR"}{r.targetId ? ` · ${r.targetId}` : ""}</p><small style={styles.muted}>{new Date(r.createdAt || Date.now()).toLocaleString("en-IN")}</small></div><div style={styles.formActions}><button style={styles.primaryButtonSmall} disabled={crLoading} onClick={()=>reviewCrRequest(r,true)}>✅ Approve</button><button style={styles.deleteButton} disabled={crLoading} onClick={()=>reviewCrRequest(r,false)}>✕ Reject</button></div></div>)}</div>
-      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>👑 CR Management</h2><p style={styles.muted}>All students are evaluated against all five criteria. Admin can assign anyone directly.</p></div></div><div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Fee</th><th style={styles.th}>Attendance</th><th style={styles.th}>Rank</th><th style={styles.th}>Average</th><th style={styles.th}>Homework</th><th style={styles.th}>Eligibility</th><th style={styles.th}>CR</th><th style={styles.th}>Action</th></tr></thead><tbody>{students.map(s=>{const m=getStudentCrMetrics(s);const e=getStudentCrEligibility(s);return <tr key={s.studentId}><td style={styles.td}><button style={styles.textButton} onClick={()=>openStudentDetails(s)}>{s.name}</button></td><td style={styles.td}>{s.className}{s.batch?` · ${s.batch}`:""}</td><td style={styles.td}>{m.feeDue===0?"✅ Clear":`₹${m.feeDue}`}</td><td style={styles.td}>{m.attendance.toFixed(0)}%</td><td style={styles.td}>{Number.isFinite(m.rank)?`#${m.rank}`:"—"}</td><td style={styles.td}>{m.average.toFixed(1)}%</td><td style={styles.td}>{m.pendingHomework===0?"✅ Done":`❌ ${m.pendingHomework} pending`}</td><td style={styles.td}><span style={e.eligible?styles.paidBadge:styles.pendingBadge}>{e.eligible?"ELIGIBLE":"NOT ELIGIBLE"}</span></td><td style={styles.td}>{s.isCR?<span style={styles.paidBadge}>⭐ CR</span>:"—"}</td><td style={styles.td}>{s.isCR?<button style={styles.deleteButton} onClick={()=>removeCr(s)}>Remove</button>:<button style={styles.primaryButtonSmall} onClick={()=>assignCrDirectly(s)}>⭐ Make CR</button>}</td></tr>})}</tbody></table></div></div>
-      <div style={styles.card}><h2>📌 Eligibility Rules</h2><div style={styles.eligibilityList}><div style={styles.eligibilityRow}><span>1️⃣</span><strong>Fee pending = ₹0</strong><small>All recorded dues cleared</small></div><div style={styles.eligibilityRow}><span>2️⃣</span><strong>Attendance &gt; 90%</strong><small>Strictly above 90%</small></div><div style={styles.eligibilityRow}><span>3️⃣</span><strong>Rank 1–5</strong><small>Overall ranking</small></div><div style={styles.eligibilityRow}><span>4️⃣</span><strong>Average &gt; 80%</strong><small>Strictly above 80%</small></div><div style={styles.eligibilityRow}><span>5️⃣</span><strong>No pending homework</strong><small>All due assigned work completed</small></div></div></div>
-    </>;
-  };
-
-  /* =========================================================
      HOMEWORK PAGE
   ========================================================= */
 
   const homeworkPage = () => {
-    const homeworkRoster = students.length ? students : directoryStudents;
     const classOptions = Array.from(
-      new Set(homeworkRoster.map((student) => student.className).filter(Boolean))
+      new Set(students.map((student) => student.className).filter(Boolean))
     );
     const batchOptions = Array.from(
-      new Set(homeworkRoster.map((student) => student.batch).filter(Boolean))
+      new Set(students.map((student) => student.batch).filter(Boolean))
     );
 
     return (
@@ -2889,11 +2557,11 @@ export default function App() {
               <label style={styles.label}>Assign to Students</label>
               <div style={styles.studentPicker}>
                 <div style={styles.pickerToolbar}>
-                  <button type="button" style={styles.secondaryButton} onClick={() => setHomeworkAssignedStudents((students.length ? students : directoryStudents).filter(s => s.studentId && (!homeworkClass || s.className === homeworkClass) && (!homeworkBatch || s.batch === homeworkBatch)).map(s => s.studentId!))}>Select all matching</button>
+                  <button type="button" style={styles.secondaryButton} onClick={() => setHomeworkAssignedStudents(students.filter(s => s.studentId && (!homeworkClass || s.className === homeworkClass) && (!homeworkBatch || s.batch === homeworkBatch)).map(s => s.studentId!))}>Select all matching</button>
                   <button type="button" style={styles.secondaryButton} onClick={() => setHomeworkAssignedStudents([])}>Clear</button>
                 </div>
                 <div style={styles.studentPickerGrid}>
-                  {(students.length ? students : directoryStudents).filter(s => (!homeworkClass || s.className === homeworkClass) && (!homeworkBatch || s.batch === homeworkBatch)).map(s => s.studentId ? (
+                  {students.filter(s => (!homeworkClass || s.className === homeworkClass) && (!homeworkBatch || s.batch === homeworkBatch)).map(s => s.studentId ? (
                     <label key={s.studentId} style={styles.studentPickerItem}><input type="checkbox" checked={homeworkAssignedStudents.includes(s.studentId)} onChange={(e) => setHomeworkAssignedStudents(prev => e.target.checked ? [...prev, s.studentId!] : prev.filter(id => id !== s.studentId))} /> <span>{s.name} <small>({s.className}{s.batch ? ` · ${s.batch}` : ""})</small></span></label>
                   ) : null)}
                 </div>
@@ -2911,7 +2579,7 @@ export default function App() {
               <div style={styles.formActions}>
                 <button type="button" style={styles.secondaryButton} onClick={resetHomeworkForm}>Cancel</button>
                 <button type="submit" style={styles.primaryButtonSmall} disabled={savingHomework}>
-                  {savingHomework ? "Saving..." : editingHomework ? (isCR ? "⏳ Send Edit for Approval" : "💾 Update Homework") : (isCR ? "⏳ Send for Admin Approval" : "💾 Add Homework")}
+                  {savingHomework ? "Saving..." : editingHomework ? "💾 Update Homework" : "💾 Add Homework"}
                 </button>
               </div>
             </form>
@@ -2935,14 +2603,14 @@ export default function App() {
                   <h3 style={{ margin: "8px 0 4px" }}>{item.subject ? `${item.subject}: ` : ""}{item.title}</h3>
                   <p style={{ margin: "0 0 8px", whiteSpace: "pre-wrap" }}>{item.description}</p>
                   {item.dueDate && <div style={styles.muted}>Due: {item.dueDate}</div>}
-                  <div style={styles.completionSummary}><strong>{homeworkDefaulters(item).length}</strong> not completed · <strong>{(students.length ? students : directoryStudents).filter(s => s.studentId && homeworkForStudent(s).some(h => h.id === item.id)).length}</strong> assigned</div>
+                  <div style={styles.completionSummary}><strong>{homeworkDefaulters(item).length}</strong> not completed · <strong>{students.filter(s => s.studentId && homeworkForStudent(s).some(h => h.id === item.id)).length}</strong> assigned</div>
                   <div style={styles.defaulterList}>
-                    {(students.length ? students : directoryStudents).filter(s => s.studentId && homeworkForStudent(s).some(h => h.id === item.id)).map(s => { const done = Boolean(((item as any).completion || {})[s.studentId!]); return <button key={s.studentId} type="button" style={done ? styles.doneStudentButton : styles.notDoneStudentButton} onClick={async () => { if ((!isAdmin && !isCR) || !item.id) return; const next = { ...(((item as any).completion || {}) as Record<string, boolean>), [s.studentId!]: !done }; if (isCR) { await createCrChangeRequest({ type: "homework_completion", targetId: item.id, studentId: profile?.studentId || "", submittedBy: user?.uid || "", submittedByName: profile?.name || "Class Representative", payload: { completion: next } }); setHomeworkMessage("Homework completion change sent to Admin for approval. ⏳"); } else { await updateHomework(item.id, { ...(item as any), completion: next }); await loadHomework(); } }}>{done ? "✓" : "○"} {s.name}</button>; })}
+                    {students.filter(s => s.studentId && homeworkForStudent(s).some(h => h.id === item.id)).map(s => { const done = Boolean(((item as any).completion || {})[s.studentId!]); return <button key={s.studentId} type="button" style={done ? styles.doneStudentButton : styles.notDoneStudentButton} onClick={async () => { if (!isAdmin || !item.id) return; const next = { ...(((item as any).completion || {}) as Record<string, boolean>), [s.studentId!]: !done }; await updateHomework(item.id, { ...(item as any), completion: next }); await loadHomework(); }}>{done ? "✓" : "○"} {s.name}</button>; })}
                   </div>
                   {homeworkDefaulters(item).length > 0 && <div style={styles.warningBox}>⚠ Homework Defaulters: {homeworkDefaulters(item).map(s => s.name).join(", ")}</div>}
                   <div style={styles.formActions}>
-                    {(isAdmin || isCR) && <><button style={styles.editButton} onClick={() => openEditHomework(item)}>✏️ Edit</button>
-                    <button style={styles.deleteButton} onClick={() => removeHomework(item)}>🗑️ Delete</button></>}
+                    <button style={styles.editButton} onClick={() => openEditHomework(item)}>✏️ Edit</button>
+                    <button style={styles.deleteButton} onClick={() => removeHomework(item)}>🗑️ Delete</button>
                   </div>
                 </div>
               ))}
@@ -3604,10 +3272,10 @@ export default function App() {
     const selected = attendanceDays.find(a=>a.date===attendanceDate);
     const historyForStudent = (sid:string) => attendanceDays.filter(d=>d.records?.[sid]).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
     return <>
-      <div style={styles.pageHeader}><div><h1>📅 Attendance</h1><p style={styles.muted}>{isCR ? "Full attendance register. Every change requires Admin approval." : "Daily present/absent register with student-wise history."}</p></div>{(isAdmin || isCR)&&<div style={{display:"flex",gap:8}}><button style={styles.secondaryButton} onClick={()=>setAllAttendance("present")}>✓ Mark All Present</button><button style={styles.secondaryButton} onClick={()=>setAllAttendance("absent")}>✕ Mark All Absent</button><button style={styles.primaryButtonSmall} onClick={saveAttendance}>💾 {isCR ? "Submit for Admin Approval" : "Save Attendance"}</button></div>}</div>
+      <div style={styles.pageHeader}><div><h1>📅 Attendance</h1><p style={styles.muted}>Daily present/absent register with student-wise history.</p></div>{isAdmin&&<div style={{display:"flex",gap:8}}><button style={styles.secondaryButton} onClick={()=>setAllAttendance("present")}>✓ Mark All Present</button><button style={styles.secondaryButton} onClick={()=>setAllAttendance("absent")}>✕ Mark All Absent</button><button style={styles.primaryButtonSmall} onClick={saveAttendance}>💾 Save Attendance</button></div>}</div>
       {attendanceMessage&&<div style={attendanceMessage.includes("successfully")?styles.successBox:styles.errorBox}>{attendanceMessage}</div>}
-      <div style={styles.card}><div style={styles.formGrid}><FormField label="Attendance Date" value={attendanceDate} onChange={(v)=>{setAttendanceDate(v);const row=attendanceDays.find(a=>a.date===v);setAttendanceRecords(row?.records||{});}} type="date"/></div>{attendanceLoading?<div style={styles.emptyBox}>Loading attendance...</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Batch</th><th style={styles.th}>Status</th></tr></thead><tbody>{(students.length ? students : directoryStudents).map(s=>s.studentId?<tr key={s.studentId}><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}>{s.batch||"-"}</td><td style={styles.td}><button disabled={false} style={(attendanceRecords[s.studentId]||"absent")==="present"?styles.doneStudentButton:styles.notDoneStudentButton} onClick={()=>setAttendanceRecords(prev=>({...prev,[s.studentId!]:prev[s.studentId!]==="present"?"absent":"present"}))}>{(attendanceRecords[s.studentId]||"absent")==="present"?"✓ Present":"○ Absent"}</button></td></tr>:null)}</tbody></table></div>}</div>
-      <div style={styles.card}><h2>📊 Attendance Summary</h2><div style={styles.grid}>{(students.length ? students : directoryStudents).map(s=>{if(!s.studentId)return null;const rows=historyForStudent(s.studentId);const present=rows.filter(r=>r.records?.[s.studentId]==="present").length;const pct=rows.length?present/rows.length*100:0;return <div key={s.studentId} style={styles.summaryMiniCard}><strong>{s.name}</strong><span>{s.className}</span><b>{pct.toFixed(0)}%</b><small>{present}/{rows.length} days present</small></div>})}</div></div>
+      <div style={styles.card}><div style={styles.formGrid}><FormField label="Attendance Date" value={attendanceDate} onChange={(v)=>{setAttendanceDate(v);const row=attendanceDays.find(a=>a.date===v);setAttendanceRecords(row?.records||{});}} type="date"/></div>{attendanceLoading?<div style={styles.emptyBox}>Loading attendance...</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Batch</th><th style={styles.th}>Status</th></tr></thead><tbody>{students.map(s=>s.studentId?<tr key={s.studentId}><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}>{s.batch||"-"}</td><td style={styles.td}><button disabled={!isAdmin} style={(attendanceRecords[s.studentId]||"absent")==="present"?styles.doneStudentButton:styles.notDoneStudentButton} onClick={()=>setAttendanceRecords(prev=>({...prev,[s.studentId!]:prev[s.studentId!]==="present"?"absent":"present"}))}>{(attendanceRecords[s.studentId]||"absent")==="present"?"✓ Present":"○ Absent"}</button></td></tr>:null)}</tbody></table></div>}</div>
+      <div style={styles.card}><h2>📊 Attendance Summary</h2><div style={styles.grid}>{students.map(s=>{if(!s.studentId)return null;const rows=historyForStudent(s.studentId);const present=rows.filter(r=>r.records?.[s.studentId]==="present").length;const pct=rows.length?present/rows.length*100:0;return <div key={s.studentId} style={styles.summaryMiniCard}><strong>{s.name}</strong><span>{s.className}</span><b>{pct.toFixed(0)}%</b><small>{present}/{rows.length} days present</small></div>})}</div></div>
     </>;
   };
 
@@ -3720,7 +3388,7 @@ export default function App() {
             💰 Fees
           </button>
 
-          {(isAdmin || isCR) && (
+          {isAdmin && (
             <button
               style={
                 page === "homework" ? styles.navButtonActive : styles.navButton
@@ -3730,13 +3398,6 @@ export default function App() {
               📚 Homework
             </button>
           )}
-
-          {isAdmin && <button
-            style={page === "cr" ? styles.navButtonActive : styles.navButton}
-            onClick={() => setPage("cr")}
-          >
-            ⭐ Class Representative
-          </button>}
 
           <button
             style={
@@ -3752,8 +3413,6 @@ export default function App() {
           {page === "dashboard" && dashboardPage()}
 
           {page === "students" && studentsPage()}
-
-          {page === "studentDetail" && selectedStudent && studentDetailPage(selectedStudent)}
 
           {page === "teachers" && <TeacherPage
             isAdmin={isAdmin}
@@ -3786,11 +3445,7 @@ export default function App() {
 
           {page === "fees" && feesPage()}
 
-          {page === "feeDetail" && selectedFeeStudent && feeDetailPage(selectedFeeStudent, selectedFeeHistory)}
-
-          {page === "homework" && (isAdmin || isCR) && homeworkPage()}
-
-          {page === "cr" && (isAdmin ? crAdminPage() : null)}
+          {page === "homework" && isAdmin && homeworkPage()}
 
           {page === "notices" && noticesPage()}
         </main>
@@ -4001,11 +3656,6 @@ const styles: {
   feeStudentHint:{display:"block",fontSize:10,color:"#64748b",marginTop:2,fontWeight:600},
   feeDetailHero:{border:"1px solid #c7d2fe",borderRadius:18,padding:18,background:"linear-gradient(135deg,#f8fafc,#eef2ff)",marginBottom:18},
   feeDetailMetrics:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10,marginTop:16},
-  eligibilityList:{display:"grid",gap:8,marginTop:12},
-  eligibilityRow:{display:"grid",gridTemplateColumns:"28px 1fr auto",alignItems:"center",gap:8,padding:"10px 12px",border:"1px solid #e5eaf1",borderRadius:11,background:"#fbfdff"},
-  requestCard:{display:"flex",justifyContent:"space-between",alignItems:"center",gap:16,padding:14,border:"1px solid #e5eaf1",borderRadius:14,marginTop:10,background:"#fff",flexWrap:"wrap"},
-  crPublicGrid:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:12,marginTop:14},
-  crPublicCard:{display:"flex",alignItems:"center",gap:14,padding:16,borderRadius:16,border:"1px solid #dbe3ff",background:"linear-gradient(135deg,#f8fafc,#eef2ff)"},
   paidNotice:{marginTop:12,padding:"10px 12px",borderRadius:10,background:"#f0fdf4",border:"1px solid #bbf7d0",color:"#166534",fontSize:12},
   infoNotice:{background:"#eff6ff",color:"#1e40af",padding:14,borderRadius:12,marginTop:15,marginBottom:10,lineHeight:1.55,border:"1px solid #bfdbfe"},
   monthFeeCard:{border:"1px solid #e2e8f0",borderRadius:15,padding:16,background:"#f8fafc"},
