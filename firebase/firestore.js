@@ -1,5 +1,5 @@
 import {
-  initializeFirestore,
+  getFirestore,
   collection,
   collectionGroup,
   doc,
@@ -15,10 +15,9 @@ import {
 
 import app from "./config";
 
-const db = initializeFirestore(app, {
-  experimentalAutoDetectLongPolling: true,
-  useFetchStreams: false,
-});
+// Firebase docs recommend getFirestore(app) for the default client database.
+// The app is initialized once in ./config before this module requests Firestore.
+const db = getFirestore(app);
 
 /** @typedef {{
  * id?: string,

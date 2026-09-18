@@ -1,4 +1,4 @@
-import { initializeApp } from "firebase/app";
+import { getApps, getApp, initializeApp } from "firebase/app";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDsQVAVs1f3okOfk8A280AP6BFduzvNtt4",
@@ -9,7 +9,10 @@ const firebaseConfig = {
   appId: "1:100256667105:web:9f856b39dd2dc5c29f2ea0"
 };
 
-const app = initializeApp(firebaseConfig);
+// One and only one client Firebase App instance.
+// Keeping initialization centralized prevents Firebase service/component
+// registration races when Auth and Firestore are imported by different modules.
+const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
-
+export { firebaseConfig };
 export default app;
