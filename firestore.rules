@@ -21,12 +21,11 @@ service cloud.firestore {
     }
 
     function isCR() {
-      return hasUserProfile() && userData().role == 'cr';
+      return hasUserProfile() && userData().role in ['cr', 'CR', 'Cr', 'class_representative'];
     }
 
     function isStudentLike() {
-      return hasUserProfile() &&
-        userData().role in ['student', 'cr'];
+      return hasUserProfile() && userData().role in ['student', 'cr', 'CR', 'Cr', 'class_representative'];
     }
 
     function ownsStudent(studentId) {

@@ -654,7 +654,7 @@ export default function App() {
         gender: profileDraft.gender || "",
         photoUrl,
       };
-      await setDoc(doc(db, "students", studentData.studentId), allowed, { merge: true });
+      await updateDoc(doc(db, "students", studentData.studentId), allowed);
       // Students may update only their own name/photo in studentDirectory.
       // Class and batch remain admin-controlled.
       await setDoc(doc(db, "studentDirectory", studentData.studentId), {
@@ -731,14 +731,11 @@ export default function App() {
           setProfileDraft(ownStudent || {});
           await loadDirector();
 
-          let ownFee = await getFeeByStudentId(userProfile.studentId);
-          if (ownStudent?.studentId) {
-            try {
-              ownFee = await ensureCurrentMonthFee(ownStudent);
-            } catch (feeError) {
-              console.warn("Unable to create current month fee automatically:", feeError);
-            }
-          }
+          // Students/CRs are read-only for fee records. The old code attempted
+          // to create the current-month fee here, but Firestore correctly
+          // reserves fee writes for Admin. That denied write was unnecessary
+          // during login and could make the portal appear broken.
+          const ownFee = await getFeeByStudentId(userProfile.studentId);
           setStudentFee(ownFee);
 
           const ownFeeHistory = await getStudentFeeHistory(
