@@ -65,6 +65,7 @@ type UserProfile = {
   studentIds?: string[];
   accountType?: "individual" | "family";
   familyName?: string;
+  parentId?: string;
   email?: string;
 };
 
@@ -132,6 +133,8 @@ type Homework = {
   createdAt?: string;
   createdBy?: string;
   createdByUid?: string;
+  assignedStudentIds?: string[];
+  completion?: Record<string, boolean>;
 };
 
 type TestResult = {
@@ -348,6 +351,10 @@ export default function App() {
   const [homeworkDueDate, setHomeworkDueDate] = useState("");
   const [savingHomework, setSavingHomework] = useState(false);
   const [homeworkRequestMode, setHomeworkRequestMode] = useState(false);
+  const [homeworkView, setHomeworkView] = useState<"classes" | "defaulters">("classes");
+  const [homeworkSelectedClass, setHomeworkSelectedClass] = useState("ALL");
+  const [homeworkAllClasses, setHomeworkAllClasses] = useState(false);
+  const [crControlTab, setCrControlTab] = useState<"overview" | "attendance" | "homework">("overview");
 
   /* =========================================================
      TESTS & RESULTS
@@ -768,6 +775,22 @@ export default function App() {
   /* =========================================================
      LOGIN HISTORY / REMOTE LOGOUT
   ========================================================= */
+
+  const remoteLogoutByUid = async (authUid: string) => {
+    if (!isAdmin || !authUid) return;
+    if (!window.confirm("Log out this account from all active devices?")) return;
+    setRemoteLogoutLoading(authUid);
+    setLoginHistoryMessage("");
+    try {
+      const token = await user?.getIdToken(true);
+      const response = await fetch("/api/admin-session-control", { method:"POST", headers:{"Content-Type":"application/json",Authorization:`Bearer ${token}`}, body:JSON.stringify({action:"logoutAll",studentAuthUid:authUid}) });
+      const data = await response.json().catch(()=>({}));
+      if (!response.ok) throw new Error(data.error || "Remote logout failed");
+      setLoginHistoryMessage("Account logged out from all active devices. ✅");
+      await loadLoginHistory();
+    } catch (error:any) { setLoginHistoryMessage(`Unable to log out account: ${error?.message || "Unknown error"}`); }
+    finally { setRemoteLogoutLoading(null); }
+  };
 
   const loadLoginHistory = async () => {
     if (!isAdmin) return;
@@ -1218,8 +1241,8 @@ export default function App() {
 
       try {
         const userProfile = await getUserProfile(currentUser.uid);
-        const normalizedProfile = userProfile
-          ? { ...userProfile, role: String(userProfile.role || "").trim().toLowerCase() }
+        const normalizedProfile: UserProfile | null = userProfile
+          ? ({ ...userProfile, role: String(userProfile.role || "").trim().toLowerCase() } as UserProfile)
           : null;
 
         setProfile(normalizedProfile);
@@ -1234,6 +1257,10 @@ export default function App() {
           try {
             await createUserSession(currentUser.uid, {
               studentId: normalizedProfile?.studentId || "",
+              studentIds: Array.isArray(normalizedProfile?.studentIds) ? normalizedProfile.studentIds : [],
+              accountType: normalizedProfile?.accountType || "individual",
+              parentId: normalizedProfile?.parentId || "",
+              familyName: normalizedProfile?.familyName || "",
               name: normalizedProfile?.name || currentUser.displayName || "",
               role: normalizedProfile?.role || "",
               email: currentUser.email || normalizedProfile?.email || "",
@@ -1244,6 +1271,10 @@ export default function App() {
               await recordLoginHistory(buildLoginHistoryEntry({
                 uid: currentUser.uid,
                 studentId: normalizedProfile?.studentId || "",
+                studentIds: Array.isArray(normalizedProfile?.studentIds) ? normalizedProfile.studentIds : [],
+                accountType: normalizedProfile?.accountType || "individual",
+                parentId: normalizedProfile?.parentId || "",
+                familyName: normalizedProfile?.familyName || "",
                 name: normalizedProfile?.name || currentUser.displayName || "",
                 role: normalizedProfile?.role || "",
                 email: currentUser.email || normalizedProfile?.email || "",
@@ -1675,11 +1706,23 @@ export default function App() {
     setHomeworkDueDate("");
     setHomeworkAssignedStudents([]);
     setHomeworkCompletion({});
+    setHomeworkAllClasses(false);
   };
 
   const openAddHomework = () => {
     if (!isAdmin && !isCR) return;
     resetHomeworkForm();
+    setHomeworkDate(new Date().toISOString().slice(0, 10));
+    setShowHomeworkForm(true);
+  };
+
+  const openAddHomeworkForClass = (className?: string) => {
+    if (!isAdmin && !isCR) return;
+    resetHomeworkForm();
+    const targetClass = className || (isCR ? studentData?.className || "" : "");
+    setHomeworkSelectedClass(targetClass || "ALL");
+    setHomeworkClass(targetClass || "");
+    setHomeworkAllClasses(false);
     setHomeworkDate(new Date().toISOString().slice(0, 10));
     setShowHomeworkForm(true);
   };
@@ -1706,14 +1749,17 @@ export default function App() {
       setHomeworkMessage("Only Admin or an assigned Class Representative can manage homework.");
       return;
     }
-    if (!homeworkClass || !homeworkTitle.trim() || !homeworkDescription.trim() || !homeworkDate) {
-      setHomeworkMessage("Select a class and enter title, homework and date.");
+    if ((!homeworkClass && !homeworkAllClasses) || !homeworkTitle.trim() || !homeworkDescription.trim() || !homeworkDate) {
+      setHomeworkMessage("Select a class (or All Classes for Admin) and enter title, homework and date.");
+      return;
+    }
+    if (isCR && homeworkAllClasses) {
+      setHomeworkMessage("CR accounts can manage only their assigned class. Admin can use All Classes.");
       return;
     }
 
     const selectedDate = new Date(`${homeworkDate}T12:00:00`);
-    const payload = {
-      className: homeworkClass,
+    const basePayload: any = {
       batch: homeworkBatch.trim(),
       subject: homeworkSubject.trim(),
       title: homeworkTitle.trim(),
@@ -1732,31 +1778,37 @@ export default function App() {
     setHomeworkMessage("");
     try {
       if (isCR) {
-        await createCrChangeRequest({
-          type: editingHomework?.id ? "homework_edit" : "homework_add",
-          targetId: editingHomework?.id || "",
-          studentId: profile?.studentId || "",
-          submittedBy: user?.uid || "",
-          submittedByName: profile?.name || "Class Representative",
-          payload,
-        });
-        setHomeworkMessage(editingHomework?.id ? "Homework edit sent to Admin for approval. ⏳" : "Homework request sent to Admin for approval. ⏳");
+        const payload = { ...basePayload, className: homeworkClass };
+        if (editingHomework?.id) {
+          await createCrChangeRequest({
+            type: "homework_edit", targetId: editingHomework.id, studentId: profile?.studentId || "",
+            submittedBy: user?.uid || "", submittedByName: profile?.name || "Class Representative", payload,
+          });
+          setHomeworkMessage("Homework edit sent to Admin for approval. ⏳");
+        } else {
+          await createCrChangeRequest({
+            type: "homework_add", targetId: "", studentId: profile?.studentId || "",
+            submittedBy: user?.uid || "", submittedByName: profile?.name || "Class Representative", payload,
+          });
+          setHomeworkMessage("Homework request sent to Admin for approval. ⏳");
+        }
       } else if (editingHomework?.id) {
-        await updateHomework(editingHomework.id, payload);
+        await updateHomework(editingHomework.id, { ...basePayload, className: homeworkClass });
         setHomeworkMessage("Homework updated successfully! ✅");
+      } else if (homeworkAllClasses) {
+        const targetClasses = Array.from(new Set((students.length ? students : directoryStudents).map(s => s.className).filter(Boolean))) as string[];
+        if (!targetClasses.length) throw new Error("No student classes are available.");
+        await Promise.all(targetClasses.map(className => addHomework({ ...basePayload, className })));
+        setHomeworkMessage(`Same homework assigned to ${targetClasses.length} classes successfully! ✅`);
       } else {
-        await addHomework(payload);
+        await addHomework({ ...basePayload, className: homeworkClass });
         setHomeworkMessage("Homework added successfully! ✅");
       }
       await loadHomework();
       resetHomeworkForm();
     } catch (error: any) {
       console.error("Homework save error:", error);
-      setHomeworkMessage(
-        `Firebase Error: ${error?.code || "unknown-error"} | ${
-          error?.message || "Unable to save homework"
-        }`
-      );
+      setHomeworkMessage(`Unable to save homework: ${error?.message || "Unknown error"}`);
     } finally {
       setSavingHomework(false);
     }
@@ -2761,79 +2813,24 @@ export default function App() {
             {studentPage === "profile" && <div style={styles.card}><h2>📇 Student Information</h2><div style={styles.twoColumn}><div>{[["Student ID",studentData?.studentId],["Class",studentData?.className],["Batch",studentData?.batch],["Email",studentData?.email],["Father's Name",studentData?.fatherName],["Mother's Name",studentData?.motherName]].map(([l,v])=><div key={l} style={styles.infoRow}><span style={styles.infoLabel}>{l}</span><strong>{v || "Not provided"}</strong></div>)}</div><div>{[["Mobile",studentData?.mobile],["Date of Birth",studentData?.dob],["Gender",studentData?.gender],["Address",studentData?.address],["CR Status",studentData?.isCR ? "Class Representative" : "Student"]].map(([l,v])=><div key={l} style={styles.infoRow}><span style={styles.infoLabel}>{l}</span><strong>{v || "Not provided"}</strong></div>)}</div></div></div>}
 
             {studentPage === "attendance" && (
-              isCR ? (
-                <div>
-                  <div style={styles.pageHeader}>
-                    <div>
-                      <h1>📅 Attendance Management</h1>
-                      <p style={styles.muted}>Manage the full student attendance register. Every CR change is sent to Admin for approval before it becomes official.</p>
-                    </div>
-                    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                      <button style={styles.secondaryButton} onClick={()=>loadAttendance()}>🔄 Refresh</button>
-                      <button style={styles.secondaryButton} onClick={()=>setAllAttendance("present")}>✓ Mark All Present</button>
-                      <button style={styles.secondaryButton} onClick={()=>setAllAttendance("absent")}>✕ Mark All Absent</button>
-                      <button style={styles.primaryButtonSmall} onClick={saveAttendance}>⏳ Submit for Admin Approval</button>
-                    </div>
-                  </div>
-                  {attendanceMessage && <div style={attendanceMessage.includes("sent") || attendanceMessage.includes("success") ? styles.infoNotice : styles.errorBox}>{attendanceMessage}</div>}
-                  <div style={styles.card}>
-                    <div style={styles.formGrid}>
-                      <FormField label="Attendance Date" value={attendanceDate} onChange={(v)=>{setAttendanceDate(v);const row=attendanceDays.find(a=>a.date===v);setAttendanceRecords(row?.records||{});}} type="date" />
-                    </div>
-                    {attendanceLoading ? <div style={styles.emptyBox}>Loading attendance...</div> : (
-                      <div style={styles.tableWrapper}>
-                        <table style={styles.table}>
-                          <thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Batch</th><th style={styles.th}>Current Status</th></tr></thead>
-                          <tbody>
-                            {students.filter(s=>s.studentId).map(s=>{
-                              const present = (attendanceRecords[s.studentId!] || "absent") === "present";
-                              return <tr key={s.studentId}>
-                                <td style={styles.td}><strong>{s.name}</strong><div style={styles.muted}>{s.studentId}</div></td>
-                                <td style={styles.td}>{s.className || "—"}</td>
-                                <td style={styles.td}>{s.batch || "—"}</td>
-                                <td style={styles.td}>
-                                  <button type="button" style={present ? styles.doneStudentButton : styles.notDoneStudentButton} onClick={()=>setAttendanceRecords(prev=>({...prev,[s.studentId!]:present?"absent":"present"}))}>
-                                    {present ? "✓ Present" : "○ Absent"}
-                                  </button>
-                                </td>
-                              </tr>;
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                  <div style={styles.card}>
-                    <h2>📊 Class Attendance Summary</h2>
-                    <div style={styles.grid}>
-                      {students.filter(s=>s.studentId).map(s=>{const stats=getAttendanceStats(s.studentId,s.authUid);return <div key={s.studentId} style={styles.summaryMiniCard}><strong>{s.name}</strong><span>{s.className || "—"}{s.batch ? ` · ${s.batch}` : ""}</span><b>{stats.percentage.toFixed(0)}%</b><small>{stats.present}/{stats.recorded} days present</small></div>;})}
-                    </div>
+              <div style={styles.card}>
+                <div style={styles.sectionTitleRow}><div><h2>📅 My Attendance</h2><p style={styles.muted}>This is your personal attendance. CR class management is available separately under the ⭐ CR Control Center.</p></div>{isCR && <span style={styles.paidBadge}>⭐ CR</span>}</div>
+                <div style={styles.feeHistoryGrid}>
+                  <div><span style={styles.smallLabel}>Present</span><strong>{presentDays}</strong></div>
+                  <div><span style={styles.smallLabel}>Absent</span><strong>{absentDays}</strong></div>
+                  <div><span style={styles.smallLabel}>Attendance</span><strong>{attendancePct.toFixed(0)}%</strong></div>
+                  <div><span style={styles.smallLabel}>Recorded Days</span><strong>{recordedAttendance.length}</strong></div>
+                </div>
+                <div className="calendarCard" style={styles.calendarCard}>
+                  <div style={styles.calendarToolbar}><h3 style={{margin:0}}>{new Date(monthAttendance.y, monthAttendance.m, 1).toLocaleDateString("en-IN",{month:"long",year:"numeric"})}</h3><input style={styles.monthInput} type="month" value={studentCalendarMonth} onChange={e=>setStudentCalendarMonth(e.target.value)} /></div>
+                  <div style={styles.calendarGrid}>
+                    {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d=><div key={d} style={styles.calendarHead}>{d}</div>)}
+                    {Array.from({length:monthAttendance.first}).map((_,i)=><div key={"e"+i}/>) }
+                    {Array.from({length:monthAttendance.days},(_,i)=>i+1).map(day=>{const status=monthAttendance.map[day];const holiday=status==="holiday";return <div key={day} title={holiday?`${day}: Holiday`:status?`${day}: ${status}`:`${day}: No record`} style={{...styles.calendarDay,...(status==="present"?styles.calendarPresent:status==="absent"?styles.calendarAbsent:holiday?styles.calendarHoliday:{})}}>{holiday?"!":day}</div>;})}
                   </div>
                 </div>
-              ) : (
-                <div style={styles.card}>
-                  <div style={styles.sectionTitleRow}><div><h2>📅 My Attendance</h2><p style={styles.muted}>The percentage and calendar below are calculated from the same daily attendance records.</p></div></div>
-                  <div style={styles.feeHistoryGrid}>
-                    <div><span style={styles.smallLabel}>Present</span><strong>{presentDays}</strong></div>
-                    <div><span style={styles.smallLabel}>Absent</span><strong>{absentDays}</strong></div>
-                    <div><span style={styles.smallLabel}>Attendance</span><strong>{attendancePct.toFixed(0)}%</strong></div>
-                    <div><span style={styles.smallLabel}>Recorded Days</span><strong>{recordedAttendance.length}</strong></div>
-                  </div>
-                  <div style={styles.calendarCard}>
-                    <div style={styles.calendarToolbar}><h3 style={{margin:0}}>{new Date(monthAttendance.y, monthAttendance.m, 1).toLocaleDateString("en-IN",{month:"long",year:"numeric"})}</h3><input style={styles.monthInput} type="month" value={studentCalendarMonth} onChange={e=>setStudentCalendarMonth(e.target.value)} /></div>
-                    <div style={styles.calendarGrid}>
-                      {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d=><div key={d} style={styles.calendarHead}>{d}</div>)}
-                      {Array.from({length:monthAttendance.first}).map((_,i)=><div key={"e"+i}/>)}
-                      {Array.from({length:monthAttendance.days},(_,i)=>i+1).map(day=>{
-                        const status=monthAttendance.map[day];
-                        const holiday=status==="holiday";
-                        return <div key={day} title={holiday ? `${day}: Holiday` : status ? `${day}: ${status}` : `${day}: No record`} style={{...styles.calendarDay,...(status==="present"?styles.calendarPresent:status==="absent"?styles.calendarAbsent:holiday?styles.calendarHoliday:{})}}>{holiday ? "!" : day}</div>;
-                      })}
-                    </div>
-                  </div>
-                  <div style={styles.legendRow}><span>🟢 Present</span><span>🔴 Absent</span><span>⚪ No record</span></div>
-                </div>
-              )
+                <div style={styles.legendRow}><span>🟢 Present</span><span>🔴 Absent</span><span>🔴 Holiday</span><span>⚪ No record</span></div>
+              </div>
             )}
 
             {studentPage === "results" && (
@@ -2859,76 +2856,22 @@ export default function App() {
             )}
 
             {studentPage === "homework" && (
-              isCR ? (
-                <div>
-                  <div style={styles.pageHeader}>
-                    <div>
-                      <h1>📚 Homework Management</h1>
-                      <p style={styles.muted}>Create, edit, delete and track homework like Admin. CR changes are queued for Admin approval.</p>
-                    </div>
-                    <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
-                      <button style={styles.secondaryButton} onClick={loadHomework}>🔄 Refresh</button>
-                      <button style={styles.primaryButtonSmall} onClick={openAddHomework}>➕ Add Homework</button>
-                    </div>
-                  </div>
-                  {homeworkMessage && <div style={homeworkMessage.includes("success") || homeworkMessage.includes("approval") || homeworkMessage.includes("sent") ? styles.infoNotice : styles.errorBox}>{homeworkMessage}</div>}
-
-                  {showHomeworkForm && (
-                    <div style={styles.card}>
-                      <div style={styles.formHeader}><div><h2>{editingHomework ? "✏️ Edit Homework" : "➕ Add Homework"}</h2><p style={styles.muted}>Any change made by the CR goes to Admin for approval.</p></div><button style={styles.closeButton} onClick={resetHomeworkForm}>✕</button></div>
-                      <form onSubmit={saveHomework}>
-                        <div style={styles.formGrid}>
-                          <FormField label="Class *" value={homeworkClass} onChange={setHomeworkClass} placeholder="Select class" type="select" options={[{label:"All classes",value:""}, ...Array.from(new Set(students.map(s=>s.className).filter(Boolean))).map(v=>({label:v as string,value:v as string}))]} />
-                          <FormField label="Batch" value={homeworkBatch} onChange={setHomeworkBatch} placeholder="All batches" type="select" options={[{label:"All batches",value:""}, ...Array.from(new Set(students.map(s=>s.batch).filter(Boolean))).map(v=>({label:v as string,value:v as string}))]} />
-                          <FormField label="Subject" value={homeworkSubject} onChange={setHomeworkSubject} placeholder="Mathematics" required={false} />
-                          <FormField label="Title *" value={homeworkTitle} onChange={setHomeworkTitle} placeholder="Example: Chapter 3 Questions" />
-                          <FormField label="Homework Date *" value={homeworkDate} onChange={setHomeworkDate} type="date" />
-                          <FormField label="Due Date" value={homeworkDueDate} onChange={setHomeworkDueDate} type="date" required={false} />
-                        </div>
-                        <label style={styles.label}>Assign to Students</label>
-                        <div style={styles.studentPicker}>
-                          <div style={styles.pickerToolbar}>
-                            <button type="button" style={styles.secondaryButton} onClick={()=>setHomeworkAssignedStudents(students.filter(s=>s.studentId && (!homeworkClass || s.className===homeworkClass) && (!homeworkBatch || s.batch===homeworkBatch)).map(s=>s.studentId!))}>Select all matching</button>
-                            <button type="button" style={styles.secondaryButton} onClick={()=>setHomeworkAssignedStudents([])}>Clear</button>
-                          </div>
-                          <div style={styles.studentPickerGrid}>
-                            {students.filter(s=>s.studentId && (!homeworkClass || s.className===homeworkClass) && (!homeworkBatch || s.batch===homeworkBatch)).map(s=><label key={s.studentId} style={styles.studentPickerItem}><input type="checkbox" checked={homeworkAssignedStudents.includes(s.studentId!)} onChange={e=>setHomeworkAssignedStudents(prev=>e.target.checked?[...prev,s.studentId!]:prev.filter(id=>id!==s.studentId))}/><span>{s.name} <small>({s.className}{s.batch?` · ${s.batch}`:""})</small></span></label>)}
-                          </div>
-                          <p style={styles.muted}>Leave all unchecked to assign the homework to the selected class/batch.</p>
-                        </div>
-                        <label style={styles.label}>Homework / Instructions *</label>
-                        <textarea style={{...styles.input,minHeight:130,resize:"vertical"}} value={homeworkDescription} onChange={e=>setHomeworkDescription(e.target.value)} placeholder="Write the homework, questions, pages, instructions, etc." required />
-                        <div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={resetHomeworkForm}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingHomework}>{savingHomework?"Sending...":editingHomework?"⏳ Send Edit for Approval":"⏳ Send for Admin Approval"}</button></div>
-                      </form>
-                    </div>
-                  )}
-
-                  <div style={styles.card}>
-                    <div style={styles.sectionTitleRow}><div><h2>📋 All Homework</h2><p style={styles.muted}>Full homework register with completion tracking.</p></div></div>
-                    {homework.length===0?<div style={styles.emptyBox}>No homework added yet.</div>:homework.map(item=>{
-                      const roster=students.filter(s=>s.studentId && homeworkForStudent(s).some(h=>h.id===item.id));
-                      const completion=((item as any).completion||{}) as Record<string,boolean>;
-                      return <div key={item.id} style={styles.homeworkItem}>
-                        <div style={styles.homeworkMeta}><strong>{item.className || "All classes"}{item.batch?` · ${item.batch}`:" · All batches"}</strong><span>{item.day||""}, {item.homeworkDate||""}</span></div>
-                        <h3 style={{margin:"8px 0 4px"}}>{item.subject?`${item.subject}: `:""}{item.title}</h3>
-                        <p style={{margin:"0 0 8px",whiteSpace:"pre-wrap"}}>{item.description}</p>
-                        {item.dueDate&&<div style={styles.muted}>Due: {item.dueDate}</div>}
-                        <div style={styles.completionSummary}><strong>{roster.filter(s=>!completion[s.studentId!]).length}</strong> not completed · <strong>{roster.length}</strong> assigned</div>
-                        <div style={styles.defaulterList}>
-                          {roster.map(s=>{const done=Boolean(completion[s.studentId!]);return <button key={s.studentId} type="button" style={done?styles.doneStudentButton:styles.notDoneStudentButton} onClick={async()=>{const next={...completion,[s.studentId!]:!done};try{await createCrChangeRequest({type:"homework_completion",targetId:item.id,studentId:profile?.studentId||"",submittedBy:user?.uid||"",submittedByName:profile?.name||"Class Representative",payload:{completion:next}});setHomeworkMessage("Homework completion change sent to Admin for approval. ⏳");}catch(error:any){setHomeworkMessage(`Unable to submit homework completion: ${error?.message||"Unknown error"}`);}}}>{done?"✓":"○"} {s.name}</button>})}
-                        </div>
-                        <div style={styles.formActions}><button style={styles.editButton} onClick={()=>openEditHomework(item)}>✏️ Edit</button><button style={styles.deleteButton} onClick={()=>removeHomework(item)}>🗑️ Delete</button></div>
-                      </div>;
-                    })}
-                  </div>
+              <div className="card" style={styles.card}>
+                <div style={styles.sectionTitleRow}>
+                  <div><h2>📚 My Homework</h2><p style={styles.muted}>Your personal homework only. CR management is available separately under the ⭐ CR Control Center.</p></div>
+                  {isCR && <span style={styles.paidBadge}>⭐ CR</span>}
                 </div>
-              ) : (
-                <div style={styles.card}>
-                  <div style={styles.sectionTitleRow}><div><h2>📚 My Homework</h2><p style={styles.muted}>Your assigned work and completion status.</p></div><div style={styles.rankBadge}>{pendingHomework.length} pending</div></div>
-                  {myHomework.length===0?<div style={styles.emptyBox}>No homework assigned to your class yet.</div>:myHomework.map(item=>{const done=Boolean(((item as any).completion||{})[studentSid]);return <div key={item.id} style={styles.homeworkItem}><div style={styles.homeworkMeta}><strong>{item.subject||"Homework"} · {item.title}</strong><span>{item.day||""}, {item.homeworkDate||""}</span></div><p style={{margin:"6px 0",whiteSpace:"pre-wrap"}}>{item.description}</p><small style={styles.muted}>Due: {item.dueDate||"No due date"}</small><div style={{marginTop:10}}><span style={done?styles.doneBadge:styles.pendingBadge}>{done?"✓ Homework Done":"⚠ Homework Not Done"}</span></div></div>})}
-                  {pendingHomework.length>0 && <div style={styles.warningBox}><strong>⚠ Pending Work</strong><p style={{margin:"5px 0 0"}}>{pendingHomework.length} homework item(s) still need completion.</p></div>}
-                </div>
-              )
+                {myHomework.length===0 ? <div style={styles.emptyBox}>No homework assigned to your class yet.</div> : myHomework.map(item=>{
+                  const done=Boolean(((item as any).completion||{})[studentSid]);
+                  return <div key={item.id} style={styles.homeworkItem}>
+                    <div style={styles.homeworkMeta}><strong>{item.subject||"Homework"} · {item.title}</strong><span>{item.day||""}, {item.homeworkDate||""}</span></div>
+                    <p style={{margin:"6px 0",whiteSpace:"pre-wrap"}}>{item.description}</p>
+                    <small style={styles.muted}>Due: {item.dueDate||"No due date"}</small>
+                    <div style={{marginTop:10}}><span style={done?styles.doneBadge:styles.pendingBadge}>{done?"✓ Homework Done":"⚠ Homework Not Done"}</span></div>
+                  </div>;
+                })}
+                {pendingHomework.length>0 && <div style={styles.warningBox}><strong>⚠ Pending Work</strong><p style={{margin:"5px 0 0"}}>{pendingHomework.length} homework item(s) still need completion.</p></div>}
+              </div>
             )}
 
             {studentPage === "monthlyReport" && (() => {
@@ -2961,24 +2904,50 @@ export default function App() {
 
             {studentPage === "cr" && (
               <>
-                <div style={styles.card}>
-                  <div style={styles.sectionTitleRow}><div><h2>⭐ Class Representative</h2><p style={styles.muted}>Current Class Representatives and CR eligibility status.</p></div>{studentData?.isCR && <span style={styles.paidBadge}>⭐ CURRENT CR</span>}</div>
-                  {(() => { const classCrs = directoryStudents.filter(s => s.isCR); return classCrs.length ? <div style={styles.crPublicGrid}>{classCrs.map(cr => <div key={cr.studentId} style={styles.crPublicCard}><div style={styles.avatarLarge}>{cr.photoUrl ? <img src={cr.photoUrl} alt="Class Representative" style={styles.avatarImage}/> : "⭐"}</div><div><h3 style={{margin:"0 0 4px"}}>{cr.name}</h3><p style={styles.muted}>{cr.className}{cr.batch ? ` · ${cr.batch}` : ""}</p><span style={styles.paidBadge}>CLASS REPRESENTATIVE</span>{cr.crSince && <small style={{display:"block",marginTop:8,color:"#64748b"}}>CR since {new Date(cr.crSince).toLocaleDateString("en-IN")}</small>}</div></div>)}</div> : <div style={styles.emptyBox}>No Class Representative has been assigned yet.</div>; })()}
+                <div className="crControlTabs" role="tablist" aria-label="CR tools">
+                  <button type="button" className={crControlTab === "overview" ? "crControlTab active" : "crControlTab"} onClick={() => setCrControlTab("overview")}>⭐ CR Overview</button>
+                  <button type="button" className={crControlTab === "attendance" ? "crControlTab active" : "crControlTab"} onClick={() => setCrControlTab("attendance")}>📅 Attendance</button>
+                  <button type="button" className={crControlTab === "homework" ? "crControlTab active" : "crControlTab"} onClick={() => setCrControlTab("homework")}>📚 Homework</button>
                 </div>
-                <div className="card" style={styles.card}>
-                  <div style={styles.sectionTitleRow}><div><h2>📋 My CR Eligibility</h2><p style={styles.muted}>All five criteria must be satisfied before you can apply.</p></div><span style={crEligibility.eligible ? styles.paidBadge : styles.pendingBadge}>{crEligibility.eligible ? "ELIGIBLE" : "NOT ELIGIBLE"}</span></div>
-                  <div style={styles.eligibilityList}>
-                    <div style={styles.eligibilityRow}><span>{totalFeePending <= crCriteria.maxFeeDue ? "✅" : "❌"}</span><strong>{`Fee pending ≤ ₹${crCriteria.maxFeeDue}`}</strong><small>₹{totalFeePending.toLocaleString("en-IN")} pending</small></div>
-                    <div style={styles.eligibilityRow}><span>{myAttendance.percentage > crCriteria.minAttendance ? "✅" : "❌"}</span><strong>{`Attendance > ${crCriteria.minAttendance}%`}</strong><small>{myAttendance.percentage.toFixed(1)}%</small></div>
-                    <div style={styles.eligibilityRow}><span>{myRank && myRank.rank >= 1 && myRank.rank <= crCriteria.maxRank ? "✅" : "❌"}</span><strong>{`Rank 1–${crCriteria.maxRank}`}</strong><small>{myRank ? `#${myRank.rank}` : "Not ranked"}</small></div>
-                    <div style={styles.eligibilityRow}><span>{myAverage > crCriteria.minAverage ? "✅" : "❌"}</span><strong>{`Average > ${crCriteria.minAverage}%`}</strong><small>{myAverage.toFixed(1)}%</small></div>
-                    <div style={styles.eligibilityRow}><span>{pendingHomework.length <= crCriteria.maxPendingHomework ? "✅" : "❌"}</span><strong>{`Pending homework ≤ ${crCriteria.maxPendingHomework}`}</strong><small>{pendingHomework.length <= crCriteria.maxPendingHomework ? "All due work done" : `${pendingHomework.length} pending`}</small></div>
+
+                {crControlTab === "overview" && <>
+                  <div style={styles.card}>
+                    <div style={styles.sectionTitleRow}><div><h2>⭐ Class Representative</h2><p style={styles.muted}>Your personal student account stays separate. These are the additional CR controls.</p></div>{studentData?.isCR && <span style={styles.paidBadge}>⭐ CURRENT CR</span>}</div>
+                    {(() => { const classCrs = directoryStudents.filter(s => s.isCR && s.className === studentData?.className); return classCrs.length ? <div style={styles.crPublicGrid}>{classCrs.map(cr => <div key={cr.studentId} style={styles.crPublicCard}><div style={styles.avatarLarge}>{cr.photoUrl ? <img src={cr.photoUrl} alt="Class Representative" style={styles.avatarImage}/> : "⭐"}</div><div><h3 style={{margin:"0 0 4px"}}>{cr.name}</h3><p style={styles.muted}>{cr.className}{cr.batch ? ` · ${cr.batch}` : ""}</p><span style={styles.paidBadge}>CLASS REPRESENTATIVE</span>{cr.crSince && <small style={{display:"block",marginTop:8,color:"#64748b"}}>CR since {new Date(cr.crSince).toLocaleDateString("en-IN")}</small>}</div></div>)}</div> : <div style={styles.emptyBox}>No Class Representative has been assigned in this class yet.</div>; })()}
                   </div>
-                  {!studentData?.isCR && crEligibility.eligible && <div style={styles.formActions}><button style={styles.primaryButtonSmall} disabled={crLoading || hasPendingCrApplication} onClick={applyForCr}>{hasPendingCrApplication ? "⏳ Application Pending" : "⭐ Apply for CR"}</button></div>}
-                  {!studentData?.isCR && !crEligibility.eligible && <div style={styles.infoNotice}>Complete all five criteria to unlock the CR application.</div>}
-                  {studentData?.isCR && <div style={styles.paidNotice}>⭐ You are an active Class Representative. Attendance and homework changes you submit require Admin approval.</div>}
-                  {crMessage && <div style={crMessage.includes("sent") ? styles.infoNotice : styles.errorBox}>{crMessage}</div>}
-                </div>
+                  <div style={styles.card}>
+                    <div style={styles.sectionTitleRow}><div><h2>📋 My CR Eligibility</h2><p style={styles.muted}>All five criteria must be satisfied before you can apply.</p></div><span style={crEligibility.eligible ? styles.paidBadge : styles.pendingBadge}>{crEligibility.eligible ? "ELIGIBLE" : "NOT ELIGIBLE"}</span></div>
+                    <div style={styles.eligibilityList}>
+                      <div style={styles.eligibilityRow}><span>{totalFeePending <= crCriteria.maxFeeDue ? "✅" : "❌"}</span><strong>{`Fee pending ≤ ₹${crCriteria.maxFeeDue}`}</strong><small>₹{totalFeePending.toLocaleString("en-IN")} pending</small></div>
+                      <div style={styles.eligibilityRow}><span>{myAttendance.percentage > crCriteria.minAttendance ? "✅" : "❌"}</span><strong>{`Attendance > ${crCriteria.minAttendance}%`}</strong><small>{myAttendance.percentage.toFixed(1)}%</small></div>
+                      <div style={styles.eligibilityRow}><span>{myRank && myRank.rank >= 1 && myRank.rank <= crCriteria.maxRank ? "✅" : "❌"}</span><strong>{`Rank 1–${crCriteria.maxRank}`}</strong><small>{myRank ? `#${myRank.rank}` : "Not ranked"}</small></div>
+                      <div style={styles.eligibilityRow}><span>{myAverage > crCriteria.minAverage ? "✅" : "❌"}</span><strong>{`Average > ${crCriteria.minAverage}%`}</strong><small>{myAverage.toFixed(1)}%</small></div>
+                      <div style={styles.eligibilityRow}><span>{pendingHomework.length <= crCriteria.maxPendingHomework ? "✅" : "❌"}</span><strong>{`Pending homework ≤ ${crCriteria.maxPendingHomework}`}</strong><small>{pendingHomework.length <= crCriteria.maxPendingHomework ? "All due work done" : `${pendingHomework.length} pending`}</small></div>
+                    </div>
+                    {!studentData?.isCR && crEligibility.eligible && <div style={styles.formActions}><button style={styles.primaryButtonSmall} disabled={crLoading || hasPendingCrApplication} onClick={applyForCr}>{hasPendingCrApplication ? "⏳ Application Pending" : "⭐ Apply for CR"}</button></div>}
+                    {!studentData?.isCR && !crEligibility.eligible && <div style={styles.infoNotice}>Complete all five criteria to unlock the CR application.</div>}
+                    {studentData?.isCR && <div style={styles.paidNotice}>⭐ You are an active Class Representative. Attendance and homework changes you submit require Admin approval.</div>}
+                    {crMessage && <div style={crMessage.includes("sent") ? styles.infoNotice : styles.errorBox}>{crMessage}</div>}
+                  </div>
+                </>}
+
+                {crControlTab === "attendance" && (
+                  <div>
+                    <div style={styles.pageHeader}><div><h1>📅 Class Attendance</h1><p style={styles.muted}>Manage attendance for your own class. Every CR change is sent to Admin for approval.</p></div><div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button style={styles.secondaryButton} onClick={()=>loadAttendance()}>🔄 Refresh</button><button style={styles.secondaryButton} onClick={()=>setAllAttendance("present")}>✓ Mark All Present</button><button style={styles.secondaryButton} onClick={()=>setAllAttendance("absent")}>✕ Mark All Absent</button><button style={styles.primaryButtonSmall} onClick={saveAttendance}>⏳ Submit for Approval</button></div></div>
+                    {attendanceMessage && <div style={attendanceMessage.includes("sent") || attendanceMessage.includes("success") ? styles.infoNotice : styles.errorBox}>{attendanceMessage}</div>}
+                    <div style={styles.card}>
+                      <div style={styles.formGrid}><FormField label="Attendance Date" value={attendanceDate} onChange={(v)=>{setAttendanceDate(v);const row=attendanceDays.find(a=>a.date===v);setAttendanceRecords(row?.records||{});}} type="date" /></div>
+                      {attendanceLoading ? <div style={styles.emptyBox}>Loading attendance...</div> : <div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Batch</th><th style={styles.th}>Status</th></tr></thead><tbody>{students.filter(s=>s.studentId && s.className===studentData?.className).map(s=>{const present=(attendanceRecords[s.studentId!]||"absent")==="present";return <tr key={s.studentId}><td style={styles.td}><strong>{s.name}</strong><div style={styles.muted}>{s.studentId}</div></td><td style={styles.td}>{s.className||"—"}</td><td style={styles.td}>{s.batch||"—"}</td><td style={styles.td}><button type="button" style={present?styles.doneStudentButton:styles.notDoneStudentButton} onClick={()=>setAttendanceRecords(prev=>({...prev,[s.studentId!]:present?"absent":"present"}))}>{present?"✓ Present":"○ Absent"}</button></td></tr>})}</tbody></table></div>}
+                    </div>
+                  </div>
+                )}
+
+                {crControlTab === "homework" && <div>
+                  <div style={styles.pageHeader}><div><h1>📚 Class Homework</h1><p style={styles.muted}>Manage homework only for your class. Add/edit/delete actions are submitted to Admin for approval.</p></div><div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button style={styles.secondaryButton} onClick={loadHomework}>🔄 Refresh</button><button style={styles.primaryButtonSmall} onClick={()=>openAddHomeworkForClass(studentData?.className)}>➕ Add Homework</button></div></div>
+                  {homeworkMessage && <div style={homeworkMessage.includes("success") || homeworkMessage.includes("approval") || homeworkMessage.includes("sent") ? styles.infoNotice : styles.errorBox}>{homeworkMessage}</div>}
+                  <div className="homeworkToolbar card" style={styles.card}><div className="homeworkTabRow"><button className={homeworkView === "classes" ? "homeworkTab active" : "homeworkTab"} onClick={()=>setHomeworkView("classes")}>📚 Class Homework</button><button className={homeworkView === "defaulters" ? "homeworkTab active" : "homeworkTab"} onClick={()=>setHomeworkView("defaulters")}>⚠ Defaulters</button></div><div className="homeworkClassTabs">{[studentData?.className || ""].filter(Boolean).map((c)=><button key={c} className={homeworkSelectedClass===c?"homeworkClassTab active":"homeworkClassTab"} onClick={()=>setHomeworkSelectedClass(c)}>{c}</button>)}</div></div>
+                  {homeworkView === "defaulters" ? <div className="card" style={styles.card}><h2>⚠ Homework Defaulters</h2>{(()=>{const roster=students.filter(s=>s.studentId&&s.className===studentData?.className);const rows=roster.map(s=>({student:s,pending:homeworkForStudent(s).filter(h=>!Boolean(((h as any).completion||{})[s.studentId!]))})).filter(x=>x.pending.length);return rows.length?rows.map(({student,pending})=><div key={student.studentId} style={styles.homeworkItem}><div style={styles.homeworkMeta}><strong>{student.name}</strong><span>{student.className}{student.batch?` · ${student.batch}`:""}</span></div><div className="defaulterHomeworkList">{pending.map(h=><div key={h.id}><strong>{h.title}</strong><small>{h.subject||"Homework"} · Due {h.dueDate||"No due date"}</small></div>)}</div><div style={styles.warningBox}>{pending.length} pending homework item(s)</div></div>):<div style={styles.emptyBox}>🎉 No homework defaulters in your class.</div>})()}</div> : <div style={styles.card}>{homework.filter(item=>item.className===studentData?.className || !item.className).length===0?<div style={styles.emptyBox}>No homework added for your class.</div>:homework.filter(item=>item.className===studentData?.className || !item.className).map(item=>{const roster=students.filter(s=>s.studentId&&homeworkForStudent(s).some(h=>h.id===item.id));const completion=((item as any).completion||{}) as Record<string,boolean>;return <div key={item.id} style={styles.homeworkItem}><div style={styles.homeworkMeta}><strong>{item.className||studentData?.className}{item.batch?` · ${item.batch}`:" · All batches"}</strong><span>{item.homeworkDate||""}{item.dueDate?` · Due ${item.dueDate}`:""}</span></div><h3 style={{margin:"8px 0 4px"}}>{item.subject?`${item.subject}: `:""}{item.title}</h3><p style={{margin:"0 0 8px",whiteSpace:"pre-wrap"}}>{item.description}</p><div style={styles.completionSummary}><strong>{roster.filter(s=>!completion[s.studentId!]).length}</strong> not completed · <strong>{roster.length}</strong> assigned</div><div style={styles.defaulterList}>{roster.map(s=>{const done=Boolean(completion[s.studentId!]);return <button key={s.studentId} type="button" style={done?styles.doneStudentButton:styles.notDoneStudentButton} onClick={async()=>{if(!item.id)return;const next={...completion,[s.studentId!]:!done};try{await createCrChangeRequest({type:"homework_completion",targetId:item.id,studentId:profile?.studentId||"",submittedBy:user?.uid||"",submittedByName:profile?.name||"Class Representative",payload:{completion:next}});setHomeworkMessage("Homework completion change sent to Admin for approval. ⏳");}catch(error:any){setHomeworkMessage(`Unable to submit completion change: ${error?.message||"Unknown error"}`);}}}>{done?"✓":"○"} {s.name}</button>})}</div><div style={styles.formActions}><button style={styles.editButton} onClick={()=>{setHomeworkSelectedClass(studentData?.className||"ALL");openEditHomework(item)}}>✏️ Edit</button><button style={styles.deleteButton} onClick={()=>removeHomework(item)}>🗑️ Delete</button></div></div>})}</div>}
+                </div>}
               </>
             )}
 
@@ -3705,119 +3674,72 @@ export default function App() {
 
   const homeworkPage = () => {
     const homeworkRoster = (students.length ? students : directoryStudents).filter(student => !isCR || student.className === studentData?.className);
-    const classOptions = Array.from(
-      new Set(homeworkRoster.map((student) => student.className).filter(Boolean))
-    );
-    const batchOptions = Array.from(
-      new Set(homeworkRoster.map((student) => student.batch).filter(Boolean))
-    );
+    const classOptions = Array.from(new Set(homeworkRoster.map((student) => student.className).filter(Boolean))) as string[];
+    const batchOptions = Array.from(new Set(homeworkRoster.map((student) => student.batch).filter(Boolean))) as string[];
+    const visibleClasses = isCR ? classOptions.filter(c => c === studentData?.className) : classOptions;
+    const effectiveClass = homeworkSelectedClass === "ALL" || !visibleClasses.includes(homeworkSelectedClass) ? "ALL" : homeworkSelectedClass;
+    const visibleHomework = homework.filter(item => effectiveClass === "ALL" ? (isCR ? item.className === studentData?.className || !item.className : true) : (item.className === effectiveClass || !item.className));
+    const rosterForDefaulters = homeworkRoster.filter(s => s.studentId && (effectiveClass === "ALL" || s.className === effectiveClass));
+    const defaulterRows = rosterForDefaulters.map(student => ({
+      student,
+      pending: homeworkForStudent(student).filter(item => !Boolean(((item as any).completion || {})[student.studentId!]))
+    })).filter(row => row.pending.length);
 
-    return (
-      <>
-        <div style={styles.pageHeader}>
-          <div>
-            <h1>📚 Homework</h1>
-            <p style={styles.muted}>Assign and manage homework by class and batch</p>
-          </div>
-          <div style={{ display: "flex", gap: 10 }}>
-            <button style={styles.secondaryButton} onClick={loadHomework}>
-              🔄 Refresh
-            </button>
-            <button style={styles.primaryButtonSmall} onClick={openAddHomework}>
-              ➕ Add Homework
-            </button>
-          </div>
+    return <>
+      <div style={styles.pageHeader}>
+        <div><h1>📚 Homework</h1><p style={styles.muted}>Choose a class first, then add, edit, delete, assign students or review defaulters.</p></div>
+        <div style={{display:"flex",gap:10,flexWrap:"wrap"}}><button style={styles.secondaryButton} onClick={loadHomework}>🔄 Refresh</button><button style={styles.primaryButtonSmall} onClick={()=>openAddHomeworkForClass(effectiveClass === "ALL" ? undefined : effectiveClass)}>➕ Add Homework</button></div>
+      </div>
+      {homeworkMessage && <div style={homeworkMessage.includes("success") || homeworkMessage.includes("approval") || homeworkMessage.includes("sent") ? styles.infoNotice : styles.errorBox}>{homeworkMessage}</div>}
+
+      <div className="homeworkToolbar card" style={styles.card}>
+        <div className="homeworkTabRow">
+          <button className={homeworkView === "classes" ? "homeworkTab active" : "homeworkTab"} onClick={()=>setHomeworkView("classes")}>📚 Homework by Class</button>
+          <button className={homeworkView === "defaulters" ? "homeworkTab active" : "homeworkTab"} onClick={()=>setHomeworkView("defaulters")}>⚠ Homework Defaulters <span className="tabCount">{defaulterRows.length}</span></button>
         </div>
-
-        {homeworkMessage && (
-          <div style={homeworkMessage.includes("successfully") ? styles.successBox : styles.errorBox}>
-            {homeworkMessage}
-          </div>
-        )}
-
-        {showHomeworkForm && (
-          <div style={styles.card}>
-            <div style={styles.formHeader}>
-              <div>
-                <h2>{editingHomework ? "✏️ Edit Homework" : "➕ Add Homework"}</h2>
-                <p style={styles.muted}>Date, day and year are saved automatically.</p>
-              </div>
-              <button style={styles.closeButton} onClick={resetHomeworkForm}>✕</button>
-            </div>
-            <form onSubmit={saveHomework}>
-              <div style={styles.formGrid}>
-                <FormField label="Class *" value={homeworkClass} onChange={setHomeworkClass} placeholder="Select class" type="select" options={classOptions.map((value) => ({ label: value as string, value: value as string }))} />
-                <FormField label="Batch" value={homeworkBatch} onChange={setHomeworkBatch} placeholder="All batches" type="select" options={[{label:"All batches", value:""}, ...batchOptions.map((value) => ({label:value as string, value:value as string}))]} />
-                <FormField label="Subject" value={homeworkSubject} onChange={setHomeworkSubject} placeholder="Physics / Chemistry / Maths" />
-                <FormField label="Title *" value={homeworkTitle} onChange={setHomeworkTitle} placeholder="Example: Chapter 3 Questions" />
-                <FormField label="Homework Date *" value={homeworkDate} onChange={setHomeworkDate} placeholder="YYYY-MM-DD" type="date" />
-                <FormField label="Due Date" value={homeworkDueDate} onChange={setHomeworkDueDate} placeholder="Optional" type="date" />
-              </div>
-              <label style={styles.label}>Assign to Students</label>
-              <div style={styles.studentPicker}>
-                <div style={styles.pickerToolbar}>
-                  <button type="button" style={styles.secondaryButton} onClick={() => setHomeworkAssignedStudents((students.length ? students : directoryStudents).filter(s => s.studentId && (!homeworkClass || s.className === homeworkClass) && (!homeworkBatch || s.batch === homeworkBatch)).map(s => s.studentId!))}>Select all matching</button>
-                  <button type="button" style={styles.secondaryButton} onClick={() => setHomeworkAssignedStudents([])}>Clear</button>
-                </div>
-                <div style={styles.studentPickerGrid}>
-                  {(students.length ? students : directoryStudents).filter(s => (!isCR || s.className === studentData?.className) && (!homeworkClass || s.className === homeworkClass) && (!homeworkBatch || s.batch === homeworkBatch)).map(s => s.studentId ? (
-                    <label key={s.studentId} style={styles.studentPickerItem}><input type="checkbox" checked={homeworkAssignedStudents.includes(s.studentId)} onChange={(e) => setHomeworkAssignedStudents(prev => e.target.checked ? [...prev, s.studentId!] : prev.filter(id => id !== s.studentId))} /> <span>{s.name} <small>({s.className}{s.batch ? ` · ${s.batch}` : ""})</small></span></label>
-                  ) : null)}
-                </div>
-                <p style={styles.muted}>If no student is selected, the homework is assigned to the whole selected class/batch.</p>
-              </div>
-
-              <label style={styles.label}>Homework / Instructions *</label>
-              <textarea
-                style={{ ...styles.input, minHeight: 130, resize: "vertical" }}
-                value={homeworkDescription}
-                onChange={(e) => setHomeworkDescription(e.target.value)}
-                placeholder="Write the homework, questions, pages, instructions, etc."
-                required
-              />
-              <div style={styles.formActions}>
-                <button type="button" style={styles.secondaryButton} onClick={resetHomeworkForm}>Cancel</button>
-                <button type="submit" style={styles.primaryButtonSmall} disabled={savingHomework}>
-                  {savingHomework ? "Saving..." : editingHomework ? (isCR ? "⏳ Send Edit for Approval" : "💾 Update Homework") : (isCR ? "⏳ Send for Admin Approval" : "💾 Add Homework")}
-                </button>
-              </div>
-            </form>
-          </div>
-        )}
-
-        <div style={styles.card}>
-          <h2>All Homework</h2>
-          {homeworkLoading ? (
-            <div style={styles.emptyBox}>Loading homework...</div>
-          ) : homework.length === 0 ? (
-            <div style={styles.emptyBox}>No homework added yet.</div>
-          ) : (
-            <div style={styles.homeworkList}>
-              {homework.map((item) => (
-                <div key={item.id} style={styles.homeworkItem}>
-                  <div style={styles.homeworkMeta}>
-                    <strong>{item.className}{item.batch ? ` · ${item.batch}` : " · All batches"}</strong>
-                    <span>{item.day}, {item.homeworkDate} · {item.year}</span>
-                  </div>
-                  <h3 style={{ margin: "8px 0 4px" }}>{item.subject ? `${item.subject}: ` : ""}{item.title}</h3>
-                  <p style={{ margin: "0 0 8px", whiteSpace: "pre-wrap" }}>{item.description}</p>
-                  {item.dueDate && <div style={styles.muted}>Due: {item.dueDate}</div>}
-                  <div style={styles.completionSummary}><strong>{homeworkDefaulters(item).length}</strong> not completed · <strong>{(students.length ? students : directoryStudents).filter(s => s.studentId && homeworkForStudent(s).some(h => h.id === item.id)).length}</strong> assigned</div>
-                  <div style={styles.defaulterList}>
-                    {(students.length ? students : directoryStudents).filter(s => s.studentId && homeworkForStudent(s).some(h => h.id === item.id)).map(s => { const done = Boolean(((item as any).completion || {})[s.studentId!]); return <button key={s.studentId} type="button" style={done ? styles.doneStudentButton : styles.notDoneStudentButton} onClick={async () => { if ((!isAdmin && !isCR) || !item.id) return; const next = { ...(((item as any).completion || {}) as Record<string, boolean>), [s.studentId!]: !done }; if (isCR) { await createCrChangeRequest({ type: "homework_completion", targetId: item.id, studentId: profile?.studentId || "", submittedBy: user?.uid || "", submittedByName: profile?.name || "Class Representative", payload: { completion: next } }); setHomeworkMessage("Homework completion change sent to Admin for approval. ⏳"); } else { await updateHomework(item.id, { ...(item as any), completion: next }); await loadHomework(); } }}>{done ? "✓" : "○"} {s.name}</button>; })}
-                  </div>
-                  {homeworkDefaulters(item).length > 0 && <div style={styles.warningBox}>⚠ Homework Defaulters: {homeworkDefaulters(item).map(s => s.name).join(", ")}</div>}
-                  <div style={styles.formActions}>
-                    {(isAdmin || isCR) && <><button style={styles.editButton} onClick={() => openEditHomework(item)}>✏️ Edit</button>
-                    <button style={styles.deleteButton} onClick={() => removeHomework(item)}>🗑️ Delete</button></>}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+        <div className="homeworkClassTabs">
+          {!isCR && <button className={effectiveClass === "ALL" ? "homeworkClassTab active" : "homeworkClassTab"} onClick={()=>setHomeworkSelectedClass("ALL")}>All Classes</button>}
+          {visibleClasses.map(c=><button key={c} className={effectiveClass===c?"homeworkClassTab active":"homeworkClassTab"} onClick={()=>setHomeworkSelectedClass(c)}>{c}</button>)}
         </div>
-      </>
-    );
+      </div>
+
+      {homeworkView === "defaulters" ? <div style={styles.card}>
+        <div style={styles.sectionTitleRow}><div><h2>⚠ Homework Defaulters</h2><p style={styles.muted}>Students with unfinished homework in {effectiveClass === "ALL" ? "all classes" : effectiveClass}.</p></div><span style={styles.rankBadge}>{defaulterRows.length} students</span></div>
+        {defaulterRows.length === 0 ? <div style={styles.emptyBox}>🎉 No homework defaulters for the selected class.</div> : <div className="homeworkDefaulterGrid">{defaulterRows.map(({student,pending})=><div key={student.studentId} className="homeworkDefaulterCard"><div className="homeworkDefaulterHeader"><div><strong>{student.name}</strong><small>{student.studentId} · {student.className}{student.batch?` · ${student.batch}`:""}</small></div><span className="defaulterCount">{pending.length} pending</span></div><div className="defaulterHomeworkList">{pending.map(item=><div key={item.id}><strong>{item.title}</strong><small>{item.subject || "Homework"} · Due {item.dueDate || "No due date"}</small></div>)}</div></div>)}</div>}
+      </div> : <div style={styles.card}>
+        <div className={styles.sectionTitleRow}><div><h2>{effectiveClass === "ALL" ? "All Classes" : `${effectiveClass} Homework`}</h2><p style={styles.muted}>{visibleHomework.length} homework item(s) shown.</p></div><button style={styles.secondaryButton} onClick={()=>openAddHomeworkForClass(effectiveClass === "ALL" ? undefined : effectiveClass)}>➕ Add to {effectiveClass === "ALL" ? "a Class" : effectiveClass}</button></div>
+        {visibleHomework.length === 0 ? <div style={styles.emptyBox}>No homework for the selected class.</div> : <div className="homeworkList">{visibleHomework.map(item=>{
+          const roster=(students.length?students:directoryStudents).filter(s=>s.studentId && homeworkForStudent(s).some(h=>h.id===item.id));
+          const completion=((item as any).completion||{}) as Record<string,boolean>;
+          return <div key={item.id} style={styles.homeworkItem}>
+            <div style={styles.homeworkMeta}><strong>{item.className || "All classes"}{item.batch?` · ${item.batch}`:" · All batches"}</strong><span>{item.day || ""}, {item.homeworkDate || ""}{item.dueDate?` · Due ${item.dueDate}`:""}</span></div>
+            <h3 style={{margin:"8px 0 4px"}}>{item.subject?`${item.subject}: `:""}{item.title}</h3><p style={{margin:"0 0 8px",whiteSpace:"pre-wrap"}}>{item.description}</p>
+            <div className="homeworkAssignSummary"><strong>{roster.length}</strong> assigned · <strong>{homeworkDefaulters(item).length}</strong> defaulter(s)</div>
+            <div style={styles.defaulterList}>{roster.map(s=>{const done=Boolean(completion[s.studentId!]);return <button key={s.studentId} type="button" style={done?styles.doneStudentButton:styles.notDoneStudentButton} onClick={async()=>{if(!item.id)return;const next={...completion,[s.studentId!]:!done};try{await updateHomework(item.id,{...(item as any),completion:next});await loadHomework();}catch(error:any){setHomeworkMessage(`Unable to update completion: ${error?.message||"Unknown error"}`);}}}>{done?"✓":"○"} {s.name}</button>})}</div>
+            <div style={styles.formActions}><button style={styles.editButton} onClick={()=>openEditHomework(item)}>✏️ Edit</button><button style={styles.deleteButton} onClick={()=>removeHomework(item)}>🗑️ Delete</button></div>
+          </div>;
+        })}</div>}
+        {isAdmin && <div className="bulkHomeworkCallout"><div><strong>📣 Same Homework to Every Class</strong><p>Use one form and create the same assignment for each active class in one click.</p></div><button style={styles.primaryButtonSmall} onClick={()=>{openAddHomeworkForClass();setHomeworkAllClasses(true);}}>➕ All Classes</button></div>}
+      </div>}
+
+      {showHomeworkForm && <div style={styles.card}>
+        <div style={styles.formHeader}><div><h2>{editingHomework ? "✏️ Edit Homework" : homeworkAllClasses ? "📣 Assign Same Homework to All Classes" : "➕ Add Homework"}</h2><p style={styles.muted}>{isCR ? "CR changes go to Admin for approval." : homeworkAllClasses ? "One submission creates the same homework for every active class." : "Select a class and optionally specific students."}</p></div><button style={styles.closeButton} onClick={resetHomeworkForm}>✕</button></div>
+        <form onSubmit={saveHomework}>
+          <div style={styles.formGrid}>
+            {!editingHomework && isAdmin && <label className="bulkHomeworkToggle"><input type="checkbox" checked={homeworkAllClasses} onChange={e=>{setHomeworkAllClasses(e.target.checked);if(e.target.checked){setHomeworkClass("");setHomeworkBatch("");setHomeworkAssignedStudents([]);}}}/><span><strong>Assign to all classes</strong><small>Creates the same homework for every active class.</small></span></label>}
+            {!homeworkAllClasses && <FormField label="Class *" value={homeworkClass} onChange={(v)=>{setHomeworkClass(v);setHomeworkSelectedClass(v || "ALL");}} placeholder="Select class" type="select" options={visibleClasses.map(value=>({label:value,value}))} />}
+            <FormField label="Batch" value={homeworkBatch} onChange={setHomeworkBatch} placeholder="All batches" type="select" options={[{label:"All batches",value:""}, ...batchOptions.map(value=>({label:value,value}))]}/>
+            <FormField label="Subject" value={homeworkSubject} onChange={setHomeworkSubject} placeholder="Mathematics" required={false}/>
+            <FormField label="Title *" value={homeworkTitle} onChange={setHomeworkTitle} placeholder="Example: Chapter 3 Questions"/>
+            <FormField label="Homework Date *" value={homeworkDate} onChange={setHomeworkDate} type="date"/>
+            <FormField label="Due Date" value={homeworkDueDate} onChange={setHomeworkDueDate} type="date" required={false}/>
+          </div>
+          {!homeworkAllClasses && <><label style={styles.label}>Assign Students</label><div style={styles.studentPicker}><div style={styles.pickerToolbar}><button type="button" style={styles.secondaryButton} onClick={()=>setHomeworkAssignedStudents(homeworkRoster.filter(s=>s.studentId && (!homeworkClass || s.className===homeworkClass) && (!homeworkBatch || s.batch===homeworkBatch)).map(s=>s.studentId!))}>Select all matching</button><button type="button" style={styles.secondaryButton} onClick={()=>setHomeworkAssignedStudents([])}>Clear</button></div><div style={styles.studentPickerGrid}>{homeworkRoster.filter(s=>s.studentId && (!homeworkClass || s.className===homeworkClass) && (!homeworkBatch || s.batch===homeworkBatch)).map(s=><label key={s.studentId} style={styles.studentPickerItem}><input type="checkbox" checked={homeworkAssignedStudents.includes(s.studentId!)} onChange={e=>setHomeworkAssignedStudents(prev=>e.target.checked?[...new Set([...prev,s.studentId!])]:prev.filter(id=>id!==s.studentId))}/><span>{s.name} <small>({s.className}{s.batch?` · ${s.batch}`:""})</small></span></label>)}</div><p style={styles.muted}>Leave all unchecked to assign it to the entire selected class/batch.</p></div></>}
+          <label style={styles.label}>Homework / Instructions *</label><textarea style={{...styles.input,minHeight:130,resize:"vertical"}} value={homeworkDescription} onChange={e=>setHomeworkDescription(e.target.value)} placeholder="Write the homework, questions, pages, instructions, etc." required/>
+          <div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={resetHomeworkForm}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingHomework}>{savingHomework?"Saving…":editingHomework?(isCR?"⏳ Send Edit for Approval":"💾 Update Homework"):(isCR?"⏳ Send for Admin Approval":"💾 Add Homework")}</button></div>
+        </form>
+      </div>}
+    </>;
   };
 
   /* =========================================================
@@ -4060,7 +3982,6 @@ export default function App() {
   const loginHistoryPage = () => {
     const studentsWithHistory = students.filter((student) => student.studentId);
     const todayKey = new Date().toISOString().slice(0, 10);
-    const studentMap = new Map(studentsWithHistory.map((student) => [student.authUid || student.studentId, student]));
     const counts = new Map<string, number>();
     const lastLogin = new Map<string, string>();
     const todayUsers = new Set<string>();
@@ -4072,24 +3993,35 @@ export default function App() {
       if (String(entry.loginAt || "").slice(0, 10) === todayKey) todayUsers.add(key);
     });
     const activeSessions = userSessions.filter((session) => session.active && session.lastSeenAt && Date.now() - new Date(session.lastSeenAt).getTime() <= 5 * 60 * 1000);
-    const rows = studentsWithHistory.map((student) => {
+    const individualRows = studentsWithHistory.map((student) => {
       const key = student.authUid || student.studentId!;
       const session = userSessions.find((item) => item.uid === student.authUid);
-      return { student, count: counts.get(key) || 0, last: lastLogin.get(key), today: todayUsers.has(key), active: Boolean(session && session.active && session.lastSeenAt && Date.now() - new Date(session.lastSeenAt).getTime() <= 5 * 60 * 1000) };
+      return { kind:"student", student, parentId:"", accountName: student.name || "-", count: counts.get(key) || 0, last: lastLogin.get(key), today: todayUsers.has(key), active: Boolean(session && session.active && session.lastSeenAt && Date.now() - new Date(session.lastSeenAt).getTime() <= 5 * 60 * 1000) };
+    });
+    const familyEntries = loginHistory.filter((entry:any) => entry.accountType === "family" || entry.parentId);
+    const familyRowsMap = new Map<string, any>();
+    familyEntries.forEach((entry:any) => {
+      const uid = entry.uid || entry.parentId;
+      if (!uid) return;
+      const existing = familyRowsMap.get(uid) || { kind:"family", uid, parentId:entry.parentId || "", accountName:entry.familyName || entry.name || "Parent / Family", email:entry.email || "", count:0, last:undefined, today:false };
+      existing.count += 1;
+      if (!existing.last || String(entry.loginAt || "") > String(existing.last)) existing.last = entry.loginAt;
+      if (String(entry.loginAt || "").slice(0, 10) === todayKey) existing.today = true;
+      familyRowsMap.set(uid, existing);
+    });
+    const familyRows = Array.from(familyRowsMap.values()).map((row:any) => {
+      const session = userSessions.find((item:any) => item.uid === row.uid);
+      return { ...row, active: Boolean(session && session.active && session.lastSeenAt && Date.now() - new Date(session.lastSeenAt).getTime() <= 5 * 60 * 1000) };
     });
     return <>
-      <div style={styles.pageHeader}><div><h1>🔐 Login History</h1><p style={styles.muted}>Monitor successful student logins and remotely log out a student from all active devices.</p></div><button style={styles.secondaryButton} onClick={loadLoginHistory}>🔄 Refresh</button></div>
+      <div style={styles.pageHeader}><div><h1>🔐 Login History</h1><p style={styles.muted}>Monitor student and parent/family login activity, including Parent ID, login count and active sessions.</p></div><button style={styles.secondaryButton} onClick={loadLoginHistory}>🔄 Refresh</button></div>
       {loginHistoryMessage && <div style={loginHistoryMessage.includes("success") || loginHistoryMessage.includes("logged out") ? styles.successBox : styles.errorBox}>{loginHistoryMessage}</div>}
-      <div style={styles.grid}>
-        <StatCard title="Students Logged In" value={String(new Set(loginHistory.filter((x:any)=>["student","cr"].includes(String(x.role || "").toLowerCase())).map((x:any)=>x.uid)).size)} icon="👨‍🎓" />
-        <StatCard title="Logged In Today" value={String(todayUsers.size)} icon="📅" />
-        <StatCard title="Total Login Events" value={String(loginHistory.length)} icon="🔢" />
-        <StatCard title="Active Sessions" value={String(activeSessions.length)} icon="🟢" />
-      </div>
-      <div style={styles.card}>
-        <h2>Student Login Activity</h2>
-        {loginHistoryLoading ? <div style={styles.emptyBox}>Loading login history...</div> : <div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Last Login</th><th style={styles.th}>Login Count</th><th style={styles.th}>Today</th><th style={styles.th}>Status</th><th style={styles.th}>Action</th></tr></thead><tbody>{rows.map(({student,count,last,today,active})=><tr key={student.studentId}><td style={styles.td}><strong>{student.name || "-"}</strong><div style={styles.muted}>{student.studentId}</div></td><td style={styles.td}>{student.className || "-"}</td><td style={styles.td}>{last ? new Date(last).toLocaleString("en-IN") : "Never recorded"}</td><td style={styles.td}><strong>{count}</strong></td><td style={styles.td}>{today ? "✅ Yes" : "—"}</td><td style={styles.td}>{active ? <span style={styles.liveBadge}>🟢 ACTIVE</span> : <span style={styles.muted}>Offline</span>}</td><td style={styles.td}><button style={styles.deleteButton} disabled={!active || remoteLogoutLoading === student.authUid} onClick={()=>remoteLogoutStudent(student)}>{remoteLogoutLoading === student.authUid ? "Logging out..." : "🚪 Log Out All Devices"}</button></td></tr>)}</tbody></table></div>}
-      </div>
+      <div style={styles.grid}><StatCard title="Students Logged In" value={String(new Set(loginHistory.filter((x:any)=>String(x.accountType||"individual") !== "family").map((x:any)=>x.uid)).size)} icon="👨‍🎓"/><StatCard title="Parent IDs Logged In" value={String(familyRows.length)} icon="👨‍👩‍👧"/><StatCard title="Logged In Today" value={String(todayUsers.size)} icon="📅"/><StatCard title="Active Sessions" value={String(activeSessions.length)} icon="🟢"/></div>
+      <div style={styles.card}><h2>Student Login Activity</h2>{loginHistoryLoading?<div style={styles.emptyBox}>Loading login history...</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Account</th><th style={styles.th}>Parent ID</th><th style={styles.th}>Class</th><th style={styles.th}>Last Login</th><th style={styles.th}>Login Count</th><th style={styles.th}>Today</th><th style={styles.th}>Status</th><th style={styles.th}>Action</th></tr></thead><tbody>
+        {individualRows.map((row:any)=><tr key={`student-${row.student.studentId}`}><td style={styles.td}><strong>{row.accountName}</strong><div style={styles.muted}>{row.student.studentId}</div></td><td style={styles.td}>—</td><td style={styles.td}>{row.student.className||"-"}</td><td style={styles.td}>{row.last?new Date(row.last).toLocaleString("en-IN"):"Never recorded"}</td><td style={styles.td}><strong>{row.count}</strong></td><td style={styles.td}>{row.today?"✅ Yes":"—"}</td><td style={styles.td}>{row.active?<span style={styles.liveBadge}>🟢 ACTIVE</span>:<span style={styles.muted}>Offline</span>}</td><td style={styles.td}><button style={styles.deleteButton} disabled={!row.active || remoteLogoutLoading===row.student.authUid} onClick={()=>remoteLogoutStudent(row.student)}>{remoteLogoutLoading===row.student.authUid?"Logging out...":"🚪 Log Out All Devices"}</button></td></tr>)}
+        {familyRows.map((row:any)=><tr key={`family-${row.uid}`}><td style={styles.td}><strong>👨‍👩‍👧 {row.accountName}</strong><div style={styles.muted}>{row.email||"Parent / Family account"}</div></td><td style={styles.td}><strong>{row.parentId||"Not assigned"}</strong></td><td style={styles.td}>Multiple profiles</td><td style={styles.td}>{row.last?new Date(row.last).toLocaleString("en-IN"):"Never recorded"}</td><td style={styles.td}><strong>{row.count}</strong></td><td style={styles.td}>{row.today?"✅ Yes":"—"}</td><td style={styles.td}>{row.active?<span style={styles.liveBadge}>🟢 ACTIVE</span>:<span style={styles.muted}>Offline</span>}</td><td style={styles.td}><button style={styles.deleteButton} disabled={!row.active || remoteLogoutLoading===row.uid} onClick={()=>remoteLogoutByUid(row.uid)}>{remoteLogoutLoading===row.uid?"Logging out...":"🚪 Log Out All Devices"}</button></td></tr>)}
+        {individualRows.length===0 && familyRows.length===0 && <tr><td style={styles.td} colSpan={8}>No login history yet.</td></tr>}
+      </tbody></table></div>}</div>
     </>;
   };
 
@@ -4118,7 +4050,7 @@ export default function App() {
         <div className="familyCardGrid">{familyAccounts.length === 0 ? <div style={styles.emptyBox}>No family accounts yet.</div> : familyAccounts.map((family:any)=>{
           const memberIds = Array.isArray(family.studentIds) ? family.studentIds : [];
           const editorOpen = familyEditorUid === family.id;
-          return <div key={family.id} className="familyAccountCard"><div className="familyAccountHeader"><div><h3 style={{margin:0}}>{family.familyName || family.name || "Family"}</h3><p style={styles.muted}>{family.email || "No email"}</p></div><button style={styles.deleteButton} onClick={()=>deleteFamilyAccount(family)}>🗑️ Remove Login</button></div><div className="familyMemberList">{memberIds.length ? memberIds.map((sid:string)=>{const student=byId.get(sid);return <div key={sid} className="familyMemberRow"><span>{student?.name || sid} <small>{student?.className || ""}</small></span>{editorOpen && <button style={styles.textButton} onClick={()=>setFamilyEditorStudentIds(prev=>prev.filter(id=>id!==sid))}>Remove</button>}</div>}) : <div style={styles.muted}>No students linked.</div>}</div><div style={styles.formActions}><button style={styles.secondaryButton} onClick={()=>{setFamilyEditorUid(editorOpen?null:family.id);setFamilyEditorStudentIds(memberIds);}}>✏️ {editorOpen?"Close Member Editor":"Edit Members"}</button></div>{editorOpen && <><div className="familyStudentPicker compact">{students.filter(s=>s.studentId).map((student)=><label key={student.studentId} className="familyStudentOption"><input type="checkbox" checked={familyEditorStudentIds.includes(student.studentId!)} onChange={(e)=>setFamilyEditorStudentIds(prev=>e.target.checked ? [...new Set([...prev,student.studentId!])] : prev.filter(id=>id!==student.studentId))}/><span><strong>{student.name}</strong><small>{student.studentId}</small></span></label>)}</div><div style={styles.formActions}><button style={styles.primaryButtonSmall} onClick={()=>updateFamilyMembers(family,familyEditorStudentIds)}>💾 Save Members</button></div></>}</div>;
+          return <div key={family.id} className="familyAccountCard"><div className="familyAccountHeader"><div><h3 style={{margin:0}}>{family.familyName || family.name || "Family"}</h3><p style={styles.muted}>{family.email || "No email"} · Parent ID: <strong>{family.parentId || "Not assigned"}</strong></p></div><button style={styles.deleteButton} onClick={()=>deleteFamilyAccount(family)}>🗑️ Remove Login</button></div><div className="familyMemberList">{memberIds.length ? memberIds.map((sid:string)=>{const student=byId.get(sid);return <div key={sid} className="familyMemberRow"><span>{student?.name || sid} <small>{student?.className || ""}</small></span>{editorOpen && <button style={styles.textButton} onClick={()=>setFamilyEditorStudentIds(prev=>prev.filter(id=>id!==sid))}>Remove</button>}</div>}) : <div style={styles.muted}>No students linked.</div>}</div><div style={styles.formActions}><button style={styles.secondaryButton} onClick={()=>{setFamilyEditorUid(editorOpen?null:family.id);setFamilyEditorStudentIds(memberIds);}}>✏️ {editorOpen?"Close Member Editor":"Edit Members"}</button></div>{editorOpen && <><div className="familyStudentPicker compact">{students.filter(s=>s.studentId).map((student)=><label key={student.studentId} className="familyStudentOption"><input type="checkbox" checked={familyEditorStudentIds.includes(student.studentId!)} onChange={(e)=>setFamilyEditorStudentIds(prev=>e.target.checked ? [...new Set([...prev,student.studentId!])] : prev.filter(id=>id!==student.studentId))}/><span><strong>{student.name}</strong><small>{student.studentId}</small></span></label>)}</div><div style={styles.formActions}><button style={styles.primaryButtonSmall} onClick={()=>updateFamilyMembers(family,familyEditorStudentIds)}>💾 Save Members</button></div></>}</div>;
         })}</div>
       </div>
     </>;

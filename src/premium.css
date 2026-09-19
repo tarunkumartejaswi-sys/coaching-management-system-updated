@@ -165,3 +165,37 @@ radial-gradient(circle at 90% 20%,rgba(14,165,233,.08),transparent 24%),#f6f8fc}
   .familyProfileBar{margin:0 12px 12px;display:block}.familyProfileButtons{justify-content:flex-start;margin-top:10px;overflow-x:auto;flex-wrap:nowrap;padding-bottom:2px}.familyProfileButton,.familyProfileActive{flex:0 0 130px}
   .familyStudentPicker,.familyCardGrid{grid-template-columns:1fr}
 }
+
+/* Homework organization + CR control */
+.homeworkToolbar{padding:16px}
+.homeworkTabRow{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.homeworkTab,.homeworkClassTab{border:1px solid #dbe3ef;background:#fff;color:#334155;border-radius:12px;padding:10px 14px;font-weight:800;cursor:pointer}
+.homeworkTab.active,.homeworkClassTab.active{background:#1d4ed8;color:#fff;border-color:#1d4ed8}
+.homeworkClassTabs{display:flex;gap:8px;overflow-x:auto;padding-bottom:2px}
+.tabCount{display:inline-flex;min-width:22px;height:22px;align-items:center;justify-content:center;border-radius:999px;background:rgba(15,23,42,.08);margin-left:6px;font-size:11px}
+.homeworkTab.active .tabCount{background:rgba(255,255,255,.18);color:#fff}
+.homeworkDefaulterGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.homeworkDefaulterCard{border:1px solid #e5eaf2;border-radius:16px;padding:15px;background:#fbfdff}
+.homeworkDefaulterHeader{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.homeworkDefaulterHeader small{display:block;color:#64748b;margin-top:4px}
+.defaulterCount{font-size:12px;font-weight:900;border-radius:999px;padding:7px 9px;background:#fee2e2;color:#991b1b;white-space:nowrap}
+.defaulterHomeworkList{display:grid;gap:8px;margin-top:12px}
+.defaulterHomeworkList>div{padding:9px 10px;border-radius:11px;background:#fff;border:1px solid #edf1f6}
+.defaulterHomeworkList strong{display:block}
+.defaulterHomeworkList small{display:block;color:#64748b;margin-top:3px}
+.homeworkAssignSummary{font-size:13px;color:#64748b;margin:8px 0}
+.bulkHomeworkCallout{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:16px;padding:15px;border-radius:15px;background:#eef6ff;border:1px solid #cfe3ff}
+.bulkHomeworkCallout p{margin:5px 0 0;color:#64748b}
+.bulkHomeworkToggle{display:flex;gap:10px;align-items:flex-start;padding:13px;border-radius:14px;border:1px solid #bfdbfe;background:#eff6ff}
+.bulkHomeworkToggle input{margin-top:4px}
+.bulkHomeworkToggle strong,.bulkHomeworkToggle small{display:block}
+.bulkHomeworkToggle small{margin-top:3px;color:#64748b}
+.crControlTabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 18px}
+.crControlTab{border:1px solid #dbe3ef;background:#fff;color:#334155;border-radius:12px;padding:10px 14px;font-weight:800;cursor:pointer}
+.crControlTab.active{background:#111827;color:#fff;border-color:#111827}
+
+@media (max-width: 760px){
+  .homeworkDefaulterGrid{grid-template-columns:1fr}
+  .bulkHomeworkCallout{flex-direction:column;align-items:flex-start}
+  .homeworkTab,.homeworkClassTab,.crControlTab{padding:9px 11px;font-size:12px}
+}

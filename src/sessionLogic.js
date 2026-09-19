@@ -1,8 +1,13 @@
-/** @typedef {{uid?:string, studentId?:string, name?:string, role?:string, email?:string, at?:string}} LoginHistoryArgs */
+/** @typedef {{uid?:string, studentId?:string, studentIds?:string[], accountType?:string, parentId?:string, familyName?:string, name?:string, role?:string, email?:string, at?:string}} LoginHistoryArgs */
 
 /** @param {LoginHistoryArgs} args */
-export function buildLoginHistoryEntry({ uid = '', studentId = '', name = '', role = '', email = '', at = new Date().toISOString() } = {}) {
-  return { uid, studentId, name, role, email, loginAt: at };
+export function buildLoginHistoryEntry({ uid = '', studentId = '', studentIds = [], accountType = 'individual', parentId = '', familyName = '', name = '', role = '', email = '', at = new Date().toISOString() } = {}) {
+  const entry = { uid, studentId, name, role, email, loginAt: at };
+  if (accountType && accountType !== 'individual') entry.accountType = accountType;
+  if (Array.isArray(studentIds) && studentIds.length) entry.studentIds = studentIds;
+  if (parentId) entry.parentId = parentId;
+  if (familyName) entry.familyName = familyName;
+  return entry;
 }
 
 export function calculateFeeAfterPaymentDelete(fee, paymentIndex) {

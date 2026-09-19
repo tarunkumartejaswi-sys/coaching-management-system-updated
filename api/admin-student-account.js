@@ -81,7 +81,13 @@ export default async function handler(req, res) {
 
       if (action === "listFamilies") {
         const snap = await firestore.collection("users").where("accountType", "==", "family").get();
-        const families = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const families = [];
+        for (const d of snap.docs) {
+          const data = d.data() || {};
+          const parentId = data.parentId || `PARENT-${d.id.slice(-6).toUpperCase()}`;
+          if (!data.parentId) await d.ref.set({ parentId, updatedAt: new Date().toISOString() }, { merge: true });
+          families.push({ id: d.id, ...data, parentId });
+        }
         return res.status(200).json({ success: true, families });
       }
 
@@ -92,8 +98,9 @@ export default async function handler(req, res) {
         const studentIds = Array.isArray(body.studentIds) ? [...new Set(body.studentIds.filter(Boolean))] : [];
         if (!email || password.length < 6 || !studentIds.length) return res.status(400).json({ error: "Family email, password (6+ chars), and at least one student are required." });
         const familyUser = await adminAuth.createUser({ email, password, displayName: name });
+        const parentId = `PARENT-${familyUser.uid.slice(-6).toUpperCase()}`;
         await firestore.collection("users").doc(familyUser.uid).set({
-          name, familyName: name, role: "student", accountType: "family", studentIds, email, updatedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
+          name, familyName: name, parentId, role: "student", accountType: "family", studentIds, email, updatedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
         });
         for (const sid of studentIds) await firestore.collection("students").doc(sid).update({ familyAccountUid: familyUser.uid });
         return res.status(200).json({ success: true, familyUid: familyUser.uid });
