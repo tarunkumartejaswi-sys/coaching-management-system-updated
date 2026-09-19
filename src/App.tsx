@@ -37,6 +37,7 @@ import db, {
   getClassTuitionFees,
   setClassTuitionFee,
   resetAllFeeRecords,
+  saveStudentFeeSettings,
   recordLoginHistory,
   createUserSession,
   touchUserSession,
@@ -46,8 +47,9 @@ import db, {
 
 import { getUserProfile } from "../firebase/user";
 import { getCrEligibility, isHomeworkPending } from "./crLogic.js";
+import { getAttendanceStatsFromDays, getAttendanceStatus as getAttendanceStatusFromLogic } from "./attendanceLogic.js";
 import { buildMonthlyStudentReport, getTestPercentages } from "./studentReportLogic.js";
-import { getBillingMonthId, getMonthlyFeeStatus, summarizeFeeRecords, getPaymentMonthOptions } from "./feeLogic.js";
+import { getBillingMonthId, getMonthlyFeeStatus, summarizeFeeRecords, getPaymentMonthOptions, getFeeRenewalDate, normalizeRenewalDay } from "./feeLogic.js";
 import { buildLoginHistoryEntry } from "./sessionLogic.js";
 import "./premium.css";
 
@@ -60,6 +62,9 @@ type UserProfile = {
   name?: string;
   role?: string;
   studentId?: string;
+  studentIds?: string[];
+  accountType?: "individual" | "family";
+  familyName?: string;
   email?: string;
 };
 
@@ -74,7 +79,10 @@ type Student = {
   average?: number;
   monthlyFee?: number;
   feeDue?: number;
+  feeRenewalDay?: number;
+  feeStartDate?: string;
   authUid?: string;
+  familyAccountUid?: string;
   photoUrl?: string;
   fatherName?: string;
   motherName?: string;
@@ -149,6 +157,8 @@ type AttendanceDay = {
   day?: string;
   year?: number;
   records?: Record<string, "present" | "absent">;
+  holiday?: boolean;
+  holidayNote?: string;
   createdAt?: string;
 };
 
@@ -195,13 +205,23 @@ export default function App() {
   const [user, setUser] = useState<any>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [studentData, setStudentData] = useState<Student | null>(null);
+  const [familyStudents, setFamilyStudents] = useState<Student[]>([]);
+  const [familyAccounts, setFamilyAccounts] = useState<any[]>([]);
+  const [familyMessage, setFamilyMessage] = useState("");
+  const [familyName, setFamilyName] = useState("");
+  const [familyEmail, setFamilyEmail] = useState("");
+  const [familyPassword, setFamilyPassword] = useState("");
+  const [familySelectedStudentIds, setFamilySelectedStudentIds] = useState<string[]>([]);
+  const [familyEditorUid, setFamilyEditorUid] = useState<string | null>(null);
+  const [familyEditorStudentIds, setFamilyEditorStudentIds] = useState<string[]>([]);
+  const [familySaving, setFamilySaving] = useState(false);
 
   const normalizedRole = String(profile?.role || "").trim().toLowerCase();
   // CR status is intentionally checked from both the login role and the
   // student record. This keeps an assigned CR's portal available even if
   // an older account still has the student role cached.
   const isAdmin = normalizedRole === "admin";
-  const isCR = normalizedRole === "cr" || studentData?.isCR === true;
+  const isCR = profile?.accountType !== "family" && (normalizedRole === "cr" || studentData?.isCR === true);
   const isStudentLike = normalizedRole === "student" || normalizedRole === "cr" || isCR;
 
   const [students, setStudents] = useState<Student[]>([]);
@@ -229,6 +249,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   const [page, setPage] = useState("dashboard");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [studentPage, setStudentPage] = useState("dashboard");
   const [feeActionPayment, setFeeActionPayment] = useState<{ student: Student; fee: Fee; paymentIndex?: number } | null>(null);
   const [editPaymentStudent, setEditPaymentStudent] = useState<Student | null>(null);
@@ -356,6 +377,8 @@ export default function App() {
   const [attendanceDays, setAttendanceDays] = useState<AttendanceDay[]>([]);
   const [attendanceDate, setAttendanceDate] = useState(new Date().toISOString().slice(0, 10));
   const [attendanceRecords, setAttendanceRecords] = useState<Record<string, "present" | "absent">>({});
+  const [attendanceHoliday, setAttendanceHoliday] = useState(false);
+  const [attendanceHolidayNote, setAttendanceHolidayNote] = useState("");
   const [attendanceMessage, setAttendanceMessage] = useState("");
   const [studentCalendarMonth, setStudentCalendarMonth] = useState(new Date().toISOString().slice(0, 7));
   const [studentReportMonth, setStudentReportMonth] = useState(new Date().toISOString().slice(0, 7));
@@ -403,6 +426,8 @@ export default function App() {
   const [showEditFee, setShowEditFee] = useState(false);
   const [editFeeStudent, setEditFeeStudent] = useState<Student | null>(null);
   const [editMonthlyFee, setEditMonthlyFee] = useState("0");
+  const [editFeeRenewalDay, setEditFeeRenewalDay] = useState("1");
+  const [editFeeStartDate, setEditFeeStartDate] = useState("");
   const [savingFeeEdit, setSavingFeeEdit] = useState(false);
 
   /* =========================================================
@@ -431,14 +456,12 @@ export default function App() {
     setFeeMessage("");
 
     try {
-      // Opening Fees renews the current calendar month only for classes that
-      // actually have tuition configured. A fresh setup therefore stays empty.
-      const classRows = await getClassTuitionFees();
-      if (classRows.length) {
-        for (const student of students) {
-          await ensureCurrentMonthFee(student);
-          if (student.studentId) await syncStudentFeeDue(student.studentId);
-        }
+      // Each student renews independently using their own monthly fee,
+      // start date and renewal day. Opening the Fees page never creates a
+      // class-wide fee record.
+      for (const student of students) {
+        await ensureCurrentMonthFee(student);
+        if (student.studentId) await syncStudentFeeDue(student.studentId);
       }
       const allFees = await getAllFees();
       setFees(allFees);
@@ -480,7 +503,7 @@ export default function App() {
       const options = getPaymentMonthOptions(history);
       const chosen = fee || options[0] || null;
       if (!chosen) {
-        setFeeMessage("No monthly fee has been created for this student yet. Set the class tuition first.");
+        setFeeMessage("No fee is due for this student yet. Check their monthly fee, start date and renewal day.");
         return;
       }
       setSelectedFeeStudent(student);
@@ -611,7 +634,7 @@ export default function App() {
       setSelectedFeeStudent(null);
       setSelectedFeeHistory([]);
       setSelectedFeeMonth(null);
-      setFeeMessage(`Fee records reset successfully. ${deleted} record(s) removed. You can now enter class tuition from scratch.`);
+      setFeeMessage(`Fee records reset successfully. ${deleted} record(s) removed. Each student can now be configured with their own monthly fee and renewal day.`);
       setPage("fees");
     } catch (error: any) {
       setFeeMessage(`Unable to reset fee records: ${error?.message || "Unknown error"}`);
@@ -667,7 +690,9 @@ export default function App() {
     if (!isAdmin) return;
     setSelectedFeeStudent(student);
     setEditFeeStudent(student);
-    setEditMonthlyFee(String(student.monthlyFee ?? student.feeDue ?? 0));
+    setEditMonthlyFee(String(student.monthlyFee ?? 0));
+    setEditFeeRenewalDay(String(normalizeRenewalDay(student.feeRenewalDay || 1)));
+    setEditFeeStartDate(student.feeStartDate || "");
     setFeeMessage("");
     setShowEditFee(false);
     setPage("feeEdit");
@@ -685,9 +710,14 @@ export default function App() {
     }
 
     const newMonthlyFee = Number(editMonthlyFee);
+    const renewalDay = Number(editFeeRenewalDay);
 
     if (!Number.isFinite(newMonthlyFee) || newMonthlyFee < 0) {
       setFeeMessage("Enter a valid monthly fee.");
+      return;
+    }
+    if (!Number.isFinite(renewalDay) || renewalDay < 1 || renewalDay > 31) {
+      setFeeMessage("Renewal day must be between 1 and 31.");
       return;
     }
 
@@ -695,40 +725,14 @@ export default function App() {
     setFeeMessage("");
 
     try {
-      /* Update the student's normal monthly fee. */
-      await updateDoc(doc(db, "students", editFeeStudent.studentId), {
+      await saveStudentFeeSettings(editFeeStudent.studentId, {
         monthlyFee: newMonthlyFee,
+        feeRenewalDay: renewalDay,
+        feeStartDate: editFeeStartDate || "",
       });
-
-      /*
-        If the current month already exists, update only the
-        current month's charge. Previous months are untouched.
-        Any amount already paid remains preserved.
-      */
-      const currentFee = await getCurrentMonthFee(editFeeStudent.studentId);
-
-      if (currentFee?.monthId) {
-        const paid = Number(currentFee.paidAmount || 0);
-        const pending = Math.max(newMonthlyFee - paid, 0);
-
-        await setDoc(
-          doc(
-            db,
-            "fees",
-            editFeeStudent.studentId,
-            "months",
-            currentFee.monthId
-          ),
-          {
-            monthlyFee: newMonthlyFee,
-            pendingAmount: pending,
-            status: pending === 0 ? "paid" : paid > 0 ? "partial" : "pending",
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        );
-      }
-
+      const refreshedStudent = await getStudentById(editFeeStudent.studentId);
+      if (refreshedStudent) setEditFeeStudent(refreshedStudent);
+      await ensureCurrentMonthFee(refreshedStudent || { ...editFeeStudent, monthlyFee: newMonthlyFee, feeRenewalDay: renewalDay, feeStartDate: editFeeStartDate });
       await syncStudentFeeDue(editFeeStudent.studentId);
 
       const updatedStudents = await getStudents();
@@ -741,7 +745,7 @@ export default function App() {
       setEditFeeStudent(null);
       setPage("feeDetail");
       setFeeMessage(
-        "Monthly fee updated successfully! Previous months were kept unchanged. ✅"
+        "Student fee settings updated. Monthly renewal follows this student’s own renewal day; previous months are unchanged. ✅"
       );
     } catch (error: any) {
       console.error("Monthly fee update error:", error);
@@ -929,6 +933,79 @@ export default function App() {
     }
   };
 
+  const adminAccountApi = async (body: any) => {
+    const idToken = await user?.getIdToken(true);
+    const response = await fetch("/api/admin-student-account", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+      body: JSON.stringify(body),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result?.error || "Unable to manage family account.");
+    return result;
+  };
+
+  const loadFamilyAccounts = async () => {
+    if (!isAdmin) return;
+    try {
+      const result = await adminAccountApi({ action: "listFamilies" });
+      setFamilyAccounts(result.families || []);
+    } catch (error: any) {
+      setFamilyMessage(error?.message || "Unable to load family accounts.");
+    }
+  };
+
+  const createFamilyAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isAdmin) return;
+    const emailValue = familyEmail.trim().toLowerCase();
+    if (!familyName.trim() || !emailValue || familyPassword.length < 6 || familySelectedStudentIds.length < 1) {
+      setFamilyMessage("Enter family name, email, password (6+ characters), and select at least one student.");
+      return;
+    }
+    setFamilySaving(true); setFamilyMessage("");
+    try {
+      await adminAccountApi({ action: "createFamily", familyName: familyName.trim(), email: emailValue, password: familyPassword, studentIds: familySelectedStudentIds });
+      setFamilyName(""); setFamilyEmail(""); setFamilyPassword(""); setFamilySelectedStudentIds([]);
+      await loadFamilyAccounts();
+      setFamilyMessage("Family login created successfully. ✅");
+    } catch (error: any) {
+      setFamilyMessage(error?.message || "Unable to create family login.");
+    } finally { setFamilySaving(false); }
+  };
+
+  const updateFamilyMembers = async (family: any, studentIds: string[]) => {
+    if (!isAdmin || !family?.id) return;
+    try {
+      await adminAccountApi({ action: "updateFamily", familyUid: family.id, studentIds });
+      await loadFamilyAccounts();
+      setFamilyMessage("Family members updated. ✅");
+    } catch (error: any) { setFamilyMessage(error?.message || "Unable to update family members."); }
+  };
+
+  const deleteFamilyAccount = async (family: any) => {
+    if (!isAdmin || !family?.id) return;
+    if (!window.confirm(`Delete the family login for ${family.familyName || family.name || "this family"}? Student records and individual logins are kept.`)) return;
+    try {
+      await adminAccountApi({ action: "deleteFamily", familyUid: family.id });
+      await loadFamilyAccounts();
+      setFamilyMessage("Family login removed. Student data was kept separate. ✅");
+    } catch (error: any) { setFamilyMessage(error?.message || "Unable to delete family login."); }
+  };
+
+  const switchFamilyStudent = async (student: Student) => {
+    if (!student?.studentId) return;
+    setStudentData(student);
+    setProfileDraft(student);
+    setStudentPage("dashboard");
+    try {
+      setStudentFee(await getFeeByStudentId(student.studentId));
+      setStudentFeeHistory(await getStudentFeeHistory(student.studentId));
+      setHomework(await getHomework());
+    } catch (error) { console.error("Family profile switch error:", error); }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   /* =========================================================
      ADD STUDENT
   ========================================================= */
@@ -952,6 +1029,8 @@ export default function App() {
   const [average, setAverage] = useState("0");
 
   const [monthlyFee, setMonthlyFee] = useState("0");
+  const [feeRenewalDay, setFeeRenewalDay] = useState("1");
+  const [feeStartDate, setFeeStartDate] = useState("");
 
   const [feeDue, setFeeDue] = useState("0");
 
@@ -976,6 +1055,8 @@ export default function App() {
   const [editAverage, setEditAverage] = useState("0");
 
   const [editStudentMonthlyFee, setEditStudentMonthlyFee] = useState("0");
+  const [editStudentFeeRenewalDay, setEditStudentFeeRenewalDay] = useState("1");
+  const [editStudentFeeStartDate, setEditStudentFeeStartDate] = useState("");
 
   const [editFeeDue, setEditFeeDue] = useState("0");
 
@@ -1040,6 +1121,7 @@ export default function App() {
   const saveStudentProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isStudentLike || !studentData?.studentId) return;
+    if (profile?.accountType === "family") { setProfileMessage("Family login profiles are view-only here. Ask Admin to edit student details."); return; }
     setProfileSaving(true);
     setProfileMessage("");
     try {
@@ -1124,6 +1206,7 @@ export default function App() {
         }
         setProfile(null);
         setStudentData(null);
+        setFamilyStudents([]);
         setStudentFee(null);
         setStudentFeeHistory([]);
         setStudents([]);
@@ -1184,8 +1267,24 @@ export default function App() {
           };
         }
 
-        if (normalizedProfile?.studentId && ["student", "cr"].includes(normalizedProfile.role)) {
+        if (normalizedProfile?.accountType === "family" || (Array.isArray(normalizedProfile?.studentIds) && normalizedProfile.studentIds.length > 1)) {
+          const linkedIds = Array.isArray(normalizedProfile.studentIds) ? normalizedProfile.studentIds : [];
+          const linked = (await Promise.all(linkedIds.map((sid: string) => getStudentById(sid)))).filter(Boolean) as Student[];
+          setFamilyStudents(linked);
+          const firstStudent = linked[0] || null;
+          setStudentData(firstStudent);
+          setProfileDraft(firstStudent || {});
+          if (firstStudent?.studentId) {
+            setStudentFee(await getFeeByStudentId(firstStudent.studentId));
+            setStudentFeeHistory(await getStudentFeeHistory(firstStudent.studentId));
+          }
+          await loadDirector();
+          const directorySnapshot = await getDocs(collection(db, "studentDirectory"));
+          setDirectoryStudents(directorySnapshot.docs.map((item: any) => ({ id: item.id, ...item.data() })) as Student[]);
+          setHomework(await getHomework());
+        } else if (normalizedProfile?.studentId && ["student", "cr"].includes(normalizedProfile.role)) {
           const ownStudent = await getStudentById(normalizedProfile.studentId);
+          setFamilyStudents(ownStudent ? [ownStudent] : []);
           setStudentData(ownStudent);
           setProfileDraft(ownStudent || {});
           await loadDirector();
@@ -1275,6 +1374,7 @@ export default function App() {
 
     setProfile(null);
     setStudentData(null);
+    setFamilyStudents([]);
     setStudentFee(null);
     setStudentFeeHistory([]);
     setStudents([]);
@@ -1341,6 +1441,7 @@ export default function App() {
         studentId: studentId.trim(),
 
         email: studentEmail.trim(),
+        accountType: "individual",
       });
 
       /* CREATE STUDENT RECORD */
@@ -1363,9 +1464,9 @@ export default function App() {
         average: Number(average) || 0,
 
         monthlyFee: Number(monthlyFee) || 0,
-
-        feeDue: Number(monthlyFee) || 0,
-
+        feeRenewalDay: normalizeRenewalDay(feeRenewalDay || 1),
+        feeStartDate: feeStartDate || new Date().toISOString().slice(0, 10),
+        feeDue: 0,
         authUid: newUser.uid,
       });
       await setDoc(doc(db, "studentDirectory", studentId.trim()), { studentId: studentId.trim(), name: studentName.trim(), className: className.trim(), batch: batch.trim() }, { merge: true });
@@ -1391,6 +1492,8 @@ export default function App() {
       setAttendance("0");
       setAverage("0");
       setMonthlyFee("0");
+      setFeeRenewalDay("1");
+      setFeeStartDate("");
       setFeeDue("0");
     } catch (error: any) {
       console.error("Student creation error:", error);
@@ -1733,7 +1836,7 @@ export default function App() {
       const attendanceSnapshot = await getDocs(query(collection(db, "attendance"), orderBy("date", "desc")));
       const days = attendanceSnapshot.docs.map((item: any) => item.data()) as AttendanceDay[];
       await Promise.all(students.filter((student) => student.studentId).map(async (student) => {
-        const rows = days.filter((row) => row.records && Object.prototype.hasOwnProperty.call(row.records, student.studentId!));
+        const rows = days.filter((row) => !row.holiday && row.records && Object.prototype.hasOwnProperty.call(row.records, student.studentId!));
         const present = rows.filter((row) => row.records?.[student.studentId!] === "present").length;
         const percentage = rows.length ? Number(((present / rows.length) * 100).toFixed(1)) : 0;
         await updateDoc(doc(db, "students", student.studentId!), { attendance: percentage });
@@ -1927,6 +2030,8 @@ export default function App() {
       const rows = snapshot.docs.map((item: any) => ({ id: item.id, ...item.data() })) as AttendanceDay[];
       setAttendanceDays(rows);
       const selected = rows.find((row) => row.date === attendanceDate);
+      setAttendanceHoliday(Boolean(selected?.holiday));
+      setAttendanceHolidayNote(selected?.holidayNote || "");
       setAttendanceRecords(selected?.records || {});
     } catch (error: any) {
       console.error("Attendance loading error:", error);
@@ -1996,31 +2101,35 @@ export default function App() {
     if ((!isAdmin && !isCR) || !attendanceDate) return;
     const d = new Date(`${attendanceDate}T12:00:00`);
     try {
+      const payload = {
+        date: attendanceDate,
+        day: d.toLocaleDateString("en-IN", { weekday: "long" }),
+        year: d.getFullYear(),
+        holiday: attendanceHoliday,
+        holidayNote: attendanceHoliday ? attendanceHolidayNote.trim() : "",
+        records: attendanceHoliday ? {} : attendanceRecords,
+        updatedAt: new Date().toISOString(),
+      };
       if (isCR) {
         await createCrChangeRequest({
           type: "attendance_update", targetId: attendanceDate, studentId: profile?.studentId || "",
-          submittedBy: user?.uid || "", submittedByName: profile?.name || "Class Representative",
-          payload: { date: attendanceDate, day: d.toLocaleDateString("en-IN", { weekday: "long" }), year: d.getFullYear(), records: attendanceRecords },
+          submittedBy: user?.uid || "", submittedByName: profile?.name || "Class Representative", payload,
         });
         setAttendanceMessage("Attendance changes sent to Admin for approval. ⏳");
         return;
       }
-      await setDoc(doc(db, "attendance", attendanceDate), {
-        date: attendanceDate, day: d.toLocaleDateString("en-IN", { weekday: "long" }), year: d.getFullYear(),
-        records: attendanceRecords, updatedAt: new Date().toISOString()
-      }, { merge: true });
+      await setDoc(doc(db, "attendance", attendanceDate), payload, { merge: true });
 
-      // Keep the summary stored on each student in sync with the daily register.
-      const combinedDays = [...attendanceDays.filter((row) => row.date !== attendanceDate), { date: attendanceDate, records: attendanceRecords }];
-      await Promise.all(students.filter((s) => s.studentId).map(async (student) => {
-        const rows = combinedDays.filter((row) => row.records && Object.prototype.hasOwnProperty.call(row.records, student.studentId!));
+      const combinedDays = [...attendanceDays.filter((row) => row.date !== attendanceDate), payload];
+      await Promise.all(students.filter((student) => student.studentId).map(async (student) => {
+        const rows = combinedDays.filter((row) => !row.holiday && row.records && Object.prototype.hasOwnProperty.call(row.records, student.studentId!));
         const present = rows.filter((row) => row.records?.[student.studentId!] === "present").length;
         const percentage = rows.length ? Number(((present / rows.length) * 100).toFixed(1)) : 0;
         await updateDoc(doc(db, "students", student.studentId!), { attendance: percentage });
       }));
       await loadAttendance();
       setStudents(await getStudents());
-      setAttendanceMessage("Attendance saved and student dashboards synced successfully! ✅");
+      setAttendanceMessage(attendanceHoliday ? "Holiday saved. It is excluded from attendance percentage. ✅" : "Attendance saved and student dashboards synced successfully! ✅");
     } catch (error: any) { setAttendanceMessage(`Unable to save attendance: ${error?.message || "Unknown error"}`); }
   };
 
@@ -2077,18 +2186,11 @@ export default function App() {
     return Object.fromEntries(Object.entries(sums).map(([sid, v]) => [sid, v.count ? v.total / v.count : 0]));
   };
 
-  const getStudentAttendanceStatus = (day: AttendanceDay, sid?: string, authUid?: string) => {
-    const records = day.records || {};
-    if (sid && records[sid]) return records[sid];
-    if (authUid && records[authUid]) return records[authUid];
-    return undefined;
-  };
+  const getStudentAttendanceStatus = (day: AttendanceDay, sid?: string, authUid?: string) => getAttendanceStatusFromLogic(day, sid || "", authUid || "");
 
   const getAttendanceStats = (sid?: string, authUid?: string) => {
     if (!sid && !authUid) return { present: 0, absent: 0, recorded: 0, percentage: 0 };
-    const rows = attendanceDays.filter((day) => Boolean(getStudentAttendanceStatus(day, sid, authUid)));
-    const present = rows.filter((day) => getStudentAttendanceStatus(day, sid, authUid) === "present").length;
-    return { present, absent: rows.length - present, recorded: rows.length, percentage: rows.length ? (present / rows.length) * 100 : 0 };
+    return getAttendanceStatsFromDays(attendanceDays, sid || "", authUid || "");
   };
 
   const getStudentRanking = () => {
@@ -2273,7 +2375,9 @@ export default function App() {
 
     setEditAverage(String(student.average ?? 0));
 
-    setEditStudentMonthlyFee(String(student.monthlyFee ?? student.feeDue ?? 0));
+    setEditStudentMonthlyFee(String(student.monthlyFee ?? 0));
+    setEditStudentFeeRenewalDay(String(normalizeRenewalDay(student.feeRenewalDay || 1)));
+    setEditStudentFeeStartDate(student.feeStartDate || "");
 
     setEditFeeDue(String(student.feeDue ?? 0));
 
@@ -2315,6 +2419,8 @@ export default function App() {
         average: Number(editAverage) || 0,
 
         monthlyFee: Number(editStudentMonthlyFee) || 0,
+        feeRenewalDay: normalizeRenewalDay(editStudentFeeRenewalDay || 1),
+        feeStartDate: editStudentFeeStartDate || "",
       });
 
       /* UPDATE USER PROFILE NAME TOO */
@@ -2475,8 +2581,12 @@ export default function App() {
       const monthKey = `${y}-${String(m + 1).padStart(2, "0")}`;
       const map: Record<number, string> = {};
       attendanceDays.filter((r) => (r.date || "").startsWith(monthKey)).forEach((r) => {
-        const status = getStudentAttendanceStatus(r, studentSid, studentData?.authUid);
-        if (status) map[Number((r.date || "").slice(-2))] = status;
+        const dayNumber = Number((r.date || "").slice(-2));
+        if (r.holiday) map[dayNumber] = "holiday";
+        else {
+          const status = getStudentAttendanceStatus(r, studentSid, studentData?.authUid);
+          if (status) map[dayNumber] = status;
+        }
       });
       return { y, m, first, days, map };
     })();
@@ -2514,6 +2624,8 @@ export default function App() {
             <button style={styles.logoutButton} onClick={handleLogout}>Logout</button>
           </div>
         </header>
+
+        {profile?.accountType === "family" && familyStudents.length > 0 && <div className="familyProfileBar"><div><strong>👨‍👩‍👧 Family Account</strong><small>{familyStudents.length} student profiles</small></div><div className="familyProfileButtons">{familyStudents.map((member) => <button key={member.studentId} className={member.studentId === studentData?.studentId ? "familyProfileActive" : "familyProfileButton"} onClick={() => switchFamilyStudent(member)}><span>{member.photoUrl ? <img src={member.photoUrl} alt=""/> : "👤"}</span><strong>{member.name}</strong><small>{member.className || "Class"}</small></button>)}</div></div>}
 
         <div style={styles.studentShell}>
           <aside style={styles.studentSidebar}>
@@ -2609,7 +2721,7 @@ export default function App() {
                   <div style={styles.profileHero}>
                     <div style={styles.avatarLarge}>{studentData?.photoUrl ? <img src={studentData.photoUrl} alt="Student" style={styles.avatarImage} /> : "👤"}</div>
                     <div style={{flex:1}}><h2 style={{margin:0}}>{studentData?.name || "Student"}</h2><p style={styles.muted}>Profile completion: {profileProgress}%</p></div>
-                    <button style={styles.primaryButtonSmall} onClick={() => { setProfileDraft(studentData || {}); setShowStudentProfile(true); }}>✏️ Edit Details</button>
+                    {profile?.accountType !== "family" && <button style={styles.primaryButtonSmall} onClick={() => { setProfileDraft(studentData || {}); setShowStudentProfile(true); }}>✏️ Edit Details</button>}
                   </div>
                   <div style={styles.progressTrack}><div style={{...styles.progressFill,width:`${profileProgress}%`}} /></div>
                   <div style={styles.formGrid}>
@@ -2714,7 +2826,8 @@ export default function App() {
                       {Array.from({length:monthAttendance.first}).map((_,i)=><div key={"e"+i}/>)}
                       {Array.from({length:monthAttendance.days},(_,i)=>i+1).map(day=>{
                         const status=monthAttendance.map[day];
-                        return <div key={day} title={status ? `${day}: ${status}` : `${day}: No record`} style={{...styles.calendarDay,...(status==="present"?styles.calendarPresent:status==="absent"?styles.calendarAbsent:{})}}>{day}</div>;
+                        const holiday=status==="holiday";
+                        return <div key={day} title={holiday ? `${day}: Holiday` : status ? `${day}: ${status}` : `${day}: No record`} style={{...styles.calendarDay,...(status==="present"?styles.calendarPresent:status==="absent"?styles.calendarAbsent:holiday?styles.calendarHoliday:{})}}>{holiday ? "!" : day}</div>;
                       })}
                     </div>
                   </div>
@@ -3090,6 +3203,20 @@ export default function App() {
                   placeholder="Example: 1000"
                   type="number"
                 />
+                <FormField
+                  label="Fee Renewal Day (1-31)"
+                  value={editStudentFeeRenewalDay}
+                  onChange={setEditStudentFeeRenewalDay}
+                  type="number"
+                  placeholder="10"
+                />
+                <FormField
+                  label="Fee Start / Joining Date"
+                  value={editStudentFeeStartDate}
+                  onChange={setEditStudentFeeStartDate}
+                  type="date"
+                  required={false}
+                />
               </div>
 
               {editMessage && (
@@ -3209,6 +3336,22 @@ export default function App() {
                   onChange={setMonthlyFee}
                   placeholder="Example: 1000"
                   type="number"
+                />
+
+                <FormField
+                  label="Fee Renewal Day (1-31)"
+                  value={feeRenewalDay}
+                  onChange={setFeeRenewalDay}
+                  placeholder="10"
+                  type="number"
+                />
+
+                <FormField
+                  label="Fee Start / Joining Date"
+                  value={feeStartDate}
+                  onChange={setFeeStartDate}
+                  type="date"
+                  required={false}
                 />
               </div>
 
@@ -3696,7 +3839,7 @@ export default function App() {
           <option value="">Select month</option>
           {paymentMonths.map((fee) => <option key={fee.id || fee.monthId} value={fee.monthId}>{fee.monthId} · Due ₹{Number(fee.pendingAmount || 0).toLocaleString("en-IN")}</option>)}
         </select>
-        {paymentMonths.length === 0 && <div style={styles.emptyBox}>No monthly fee records available. Set the class tuition first.</div>}
+        {paymentMonths.length === 0 && <div style={styles.emptyBox}>No monthly fee records available. Configure a student's fee settings first.</div>}
       </div>
       {selected && <div style={styles.card}>
         <div style={styles.feePaymentHero}><div><span style={styles.smallLabel}>Selected Month</span><strong>{selected.monthId}</strong></div><span style={selected.pendingAmount > 0 ? styles.pendingBadge : styles.paidBadge}>{selected.pendingAmount > 0 ? "🔴 DUE" : "🟢 PAID"}</span></div>
@@ -3713,7 +3856,7 @@ export default function App() {
     </div>;
   };
 
-  const feeEditPage = () => !editFeeStudent ? null : <div><div style={styles.pageHeader}><div><button style={styles.textButton} onClick={feeBack}>← Back</button><h1>✏️ Edit Monthly Fee</h1><p style={styles.muted}>{editFeeStudent.name} · {editFeeStudent.studentId}</p></div></div><div style={styles.card}><form onSubmit={saveMonthlyFeeEdit}><div style={styles.formGrid}><FormField label="Student" value={editFeeStudent.name||""} onChange={()=>{}} placeholder="Student"/><FormField label="Monthly Fee ₹" value={editMonthlyFee} onChange={setEditMonthlyFee} placeholder="1500" type="number"/></div><div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={feeBack}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingFeeEdit}>{savingFeeEdit?"Saving...":"💾 Save Fee"}</button></div></form></div></div>;
+  const feeEditPage = () => !editFeeStudent ? null : <div><div style={styles.pageHeader}><div><button style={styles.textButton} onClick={feeBack}>← Back</button><h1>⚙️ Student Fee Settings</h1><p style={styles.muted}>{editFeeStudent.name} · {editFeeStudent.studentId}</p></div></div><div style={styles.card}><div style={styles.infoNotice}>This fee is controlled per student. The monthly charge renews on the student's own renewal day and never overwrites older months.</div><form onSubmit={saveMonthlyFeeEdit}><div style={styles.formGrid}><FormField label="Student" value={editFeeStudent.name||""} onChange={()=>{}} placeholder="Student"/><FormField label="Monthly Fee ₹" value={editMonthlyFee} onChange={setEditMonthlyFee} placeholder="1500" type="number"/><FormField label="Renewal Day (1-31)" value={editFeeRenewalDay} onChange={setEditFeeRenewalDay} type="number"/><FormField label="Fee Start / Joining Date" value={editFeeStartDate} onChange={setEditFeeStartDate} type="date" required={false}/></div><p style={styles.muted}>Example: ₹500 + renewal day 10 + start date 2026-09-10 creates the September fee on 10 September and the next month on 10 October.</p><div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={feeBack}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingFeeEdit}>{savingFeeEdit?"Saving...":"💾 Save Fee Settings"}</button></div></form></div></div>;
 
   const feeAddPreviousPage = () => !addFeeStudent ? null : <div><div style={styles.pageHeader}><div><button style={styles.textButton} onClick={feeBack}>← Back</button><h1>📅 Add Previous Dues</h1><p style={styles.muted}>{addFeeStudent.name} · {addFeeStudent.studentId}</p></div></div><div style={styles.card}><div style={styles.infoNotice}>Add a missing previous month. Its remaining balance becomes part of the student's total outstanding dues.</div><form onSubmit={saveAddedFeeMonth}><div style={styles.formGrid}><div><label style={styles.label}>Month</label><input style={styles.input} type="month" value={addFeeMonth} onChange={e=>setAddFeeMonth(e.target.value)} required/></div><FormField label="Fee Dues ₹" value={addFeeAmount} onChange={setAddFeeAmount} type="number" placeholder="1000"/><div><label style={styles.label}>Due Date</label><input style={styles.input} type="date" value={addFeeDueDate} onChange={e=>setAddFeeDueDate(e.target.value)}/></div><FormField label="Note" value={addFeeNote} onChange={setAddFeeNote} placeholder="Previous dues"/></div><div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={feeBack}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingAddFee}>{savingAddFee?"Saving...":"➕ Add Previous Dues"}</button></div></form></div></div>;
 
@@ -3769,7 +3912,7 @@ export default function App() {
           <p style={{margin:0,opacity:.82}}>Simple monthly tuition, payments and dues. Nothing unnecessary.</p>
         </div>
         <div style={styles.feeHeroActions}>
-          <button style={styles.secondaryButton} onClick={() => { setPage('feeClassTuition'); loadClassTuition(); }}>🏫 Class Tuition</button>
+          <button style={styles.secondaryButton} onClick={() => setPage('feePaymentHistory')}>📜 Payment History</button>
           <button style={styles.primaryButtonSmall} onClick={loadFees} disabled={feeLoading}>{feeLoading ? 'Loading…' : '↻ Refresh'}</button>
         </div>
       </div>
@@ -3800,7 +3943,7 @@ export default function App() {
         <div style={styles.card}>
           <div style={styles.sectionTitleRow}><div><h2 style={{marginBottom:4}}>⚡ Quick Actions</h2><p style={styles.muted}>Open the exact page you need.</p></div></div>
           <div style={styles.quickGrid}>
-            <button style={styles.quickAction} onClick={() => { setPage('feeClassTuition'); loadClassTuition(); }}>🏫 <strong>Set Class Tuition</strong><small style={styles.muted}>Monthly amount for each class</small></button>
+            <button style={styles.quickAction} onClick={() => setPage('students')}>👨‍🎓 <strong>Student Fee Settings</strong><small style={styles.muted}>Open a student to set their fee and renewal day</small></button>
             <button style={styles.quickAction} onClick={() => setPage('feePaymentHistory')}>📜 <strong>Payment History</strong><small style={styles.muted}>View, edit or delete payments</small></button>
           </div>
         </div>
@@ -3818,7 +3961,7 @@ export default function App() {
               const current = currentRecords.find((f) => f.studentId === student.studentId);
               const remaining = studentFees.reduce((sum, f) => sum + Number(f.pendingAmount || 0), 0);
               const paid = studentFees.reduce((sum, f) => sum + Number(f.paidAmount || 0), 0);
-              const monthly = current?.monthlyFee ?? classTuitionFees.find((x:any) => x.className === student.className)?.monthlyFee ?? 0;
+              const monthly = current?.monthlyFee ?? student.monthlyFee ?? 0;
               const status = current ? getMonthlyFeeStatus(Number(current.monthlyFee || 0), Number(current.pendingAmount || 0), Number(current.paidAmount || 0)) : 'pending';
               return <button key={student.studentId} type="button" style={styles.feeStudentCard} onClick={() => openFeeHistory(student)}>
                 <span style={styles.feeAvatar}>{(student.name || '?').trim().charAt(0).toUpperCase()}</span>
@@ -3828,7 +3971,7 @@ export default function App() {
                   <small>Monthly tuition: ₹{Number(monthly).toLocaleString('en-IN')}</small>
                   <small>Paid: ₹{paid.toLocaleString('en-IN')} · Remaining: ₹{remaining.toLocaleString('en-IN')}</small>
                 </div>
-                <span style={status === 'paid' ? styles.paidBadge : styles.pendingBadge}>{status === 'paid' ? '✓ Paid' : current ? `₹${Number(current.pendingAmount || 0).toLocaleString('en-IN')} Due` : 'Not Set'}</span>
+                <span style={status === 'paid' ? styles.paidBadge : styles.pendingBadge}>{status === 'paid' ? '✓ Paid' : current ? `₹${Number(current.pendingAmount || 0).toLocaleString('en-IN')} Due` : student.monthlyFee ? 'Not due yet' : 'Not Set'}</span>
               </button>;
             })}
           </div>
@@ -3859,10 +4002,10 @@ export default function App() {
 
       <div style={styles.card}>
         <div style={styles.sectionTitleRow}>
-          <div><h2 style={{marginBottom:4}}>🧹 Start Fee Section Fresh</h2><p style={styles.muted}>Use this once if you want to remove old fee data before entering the real class tuition.</p></div>
+          <div><h2 style={{marginBottom:4}}>🧹 Start Fee Section Fresh</h2><p style={styles.muted}>Use this once to clear old fee records. Student profiles remain untouched.</p></div>
           <button style={styles.deleteButton} disabled={feeResetting} onClick={resetFeeRecords}>{feeResetting ? 'Clearing…' : 'Clear All Fee Data'}</button>
         </div>
-        <div style={styles.infoNotice}>This clears fee records, previous dues, payments and class tuition settings only. Students, teachers, tests, attendance and homework are not deleted.</div>
+        <div style={styles.infoNotice}>This clears fee records, previous dues and payments only. Students, teachers, tests, attendance and homework are not deleted.</div>
       </div>
 
     </>;
@@ -3888,13 +4031,22 @@ export default function App() {
   };
 
   const attendancePage = () => {
-    const selected = attendanceDays.find(a=>a.date===attendanceDate);
-    const historyForStudent = (sid:string) => attendanceDays.filter(d=>d.records?.[sid]).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+    const selected = attendanceDays.find(a => a.date === attendanceDate);
+    const historyForStudent = (sid:string) => attendanceDays.filter(d => !d.holiday && d.records?.[sid]).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
     return <>
-      <div style={styles.pageHeader}><div><h1>📅 Attendance</h1><p style={styles.muted}>{isCR ? "Full attendance register. Every change requires Admin approval." : "Daily present/absent register with student-wise history."}</p></div>{(isAdmin || isCR)&&<div style={{display:"flex",gap:8}}><button style={styles.secondaryButton} onClick={()=>setAllAttendance("present")}>✓ Mark All Present</button><button style={styles.secondaryButton} onClick={()=>setAllAttendance("absent")}>✕ Mark All Absent</button><button style={styles.primaryButtonSmall} onClick={saveAttendance}>💾 {isCR ? "Submit for Admin Approval" : "Save Attendance"}</button></div>}</div>
-      {attendanceMessage&&<div style={attendanceMessage.includes("successfully")?styles.successBox:styles.errorBox}>{attendanceMessage}</div>}
-      <div style={styles.card}><div style={styles.formGrid}><FormField label="Attendance Date" value={attendanceDate} onChange={(v)=>{setAttendanceDate(v);const row=attendanceDays.find(a=>a.date===v);setAttendanceRecords(row?.records||{});}} type="date"/></div>{attendanceLoading?<div style={styles.emptyBox}>Loading attendance...</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Batch</th><th style={styles.th}>Status</th></tr></thead><tbody>{(students.length ? students : directoryStudents).filter(s => !isCR || s.className === studentData?.className).map(s=>s.studentId?<tr key={s.studentId}><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}>{s.batch||"-"}</td><td style={styles.td}><button disabled={false} style={(attendanceRecords[s.studentId]||"absent")==="present"?styles.doneStudentButton:styles.notDoneStudentButton} onClick={()=>setAttendanceRecords(prev=>({...prev,[s.studentId!]:prev[s.studentId!]==="present"?"absent":"present"}))}>{(attendanceRecords[s.studentId]||"absent")==="present"?"✓ Present":"○ Absent"}</button></td></tr>:null)}</tbody></table></div>}</div>
-      <div style={styles.card}><h2>📊 Attendance Summary</h2><div style={styles.grid}>{(students.length ? students : directoryStudents).map(s=>{if(!s.studentId)return null;const rows=historyForStudent(s.studentId);const present=rows.filter(r=>r.records?.[s.studentId]==="present").length;const pct=rows.length?present/rows.length*100:0;return <div key={s.studentId} style={styles.summaryMiniCard}><strong>{s.name}</strong><span>{s.className}</span><b>{pct.toFixed(0)}%</b><small>{present}/{rows.length} days present</small></div>})}</div></div>
+      <div style={styles.pageHeader}>
+        <div><h1>📅 Attendance</h1><p style={styles.muted}>{isCR ? "Full attendance register. Every change requires Admin approval." : "Daily present/absent register with holidays excluded from attendance percentage."}</p></div>
+        {(isAdmin || isCR)&&<div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button style={styles.secondaryButton} onClick={()=>setAllAttendance("present")}>✓ Mark All Present</button><button style={styles.secondaryButton} onClick={()=>setAllAttendance("absent")}>✕ Mark All Absent</button><button style={attendanceHoliday ? styles.deleteButton : styles.secondaryButton} onClick={()=>setAttendanceHoliday(v=>!v)}>{attendanceHoliday ? "🔴 Holiday Enabled" : "📅 Mark Holiday"}</button><button style={styles.primaryButtonSmall} onClick={saveAttendance}>💾 {isCR ? "Submit for Admin Approval" : "Save Attendance"}</button></div>}
+      </div>
+      {attendanceMessage&&<div style={attendanceMessage.includes("saved") || attendanceMessage.includes("success") || attendanceMessage.includes("sent") ? styles.successBox : styles.errorBox}>{attendanceMessage}</div>}
+      <div style={styles.card}>
+        <div style={styles.formGrid}><FormField label="Attendance Date" value={attendanceDate} onChange={(v)=>{setAttendanceDate(v);const row=attendanceDays.find(a=>a.date===v);setAttendanceHoliday(Boolean(row?.holiday));setAttendanceHolidayNote(row?.holidayNote||"");setAttendanceRecords(row?.records||{});}} type="date"/></div>
+        {attendanceHoliday && <div style={styles.holidayBanner}><span className="holidayCircle" aria-hidden="true">!</span><div><strong>Holiday</strong><div>{attendanceHolidayNote || "Holiday note not added yet."}</div></div></div>}
+        {attendanceHoliday && <div style={styles.formGrid}><FormField label="Holiday Note / Reason" value={attendanceHolidayNote} onChange={setAttendanceHolidayNote} placeholder="Sunday / Festival / Coaching closed" required={false}/></div>}
+        {!attendanceHoliday && (attendanceLoading?<div style={styles.emptyBox}>Loading attendance...</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Batch</th><th style={styles.th}>Status</th></tr></thead><tbody>{(students.length ? students : directoryStudents).filter(s => !isCR || s.className === studentData?.className).map(s=>s.studentId?<tr key={s.studentId}><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}>{s.batch||"-"}</td><td style={styles.td}><button disabled={false} style={(attendanceRecords[s.studentId]||"absent")==="present"?styles.doneStudentButton:styles.notDoneStudentButton} onClick={()=>setAttendanceRecords(prev=>({...prev,[s.studentId!]:prev[s.studentId!]==="present"?"absent":"present"}))}>{(attendanceRecords[s.studentId]||"absent")==="present"?"✓ Present":"○ Absent"}</button></td></tr>:null)}</tbody></table></div>)}
+      </div>
+      <div style={styles.card}><h2>📊 Attendance Summary</h2><div style={styles.grid}>{(students.length ? students : directoryStudents).map(s=>{if(!s.studentId)return null;const rows=historyForStudent(s.studentId);const present=rows.filter(r=>r.records?.[s.studentId]==="present").length;const pct=rows.length?present/rows.length*100:0;return <div key={s.studentId} style={styles.summaryMiniCard}><strong>{s.name}</strong><span>{s.className}</span><b>{pct.toFixed(0)}%</b><small>{present}/{rows.length} working attendance days</small></div>})}</div></div>
+      {selected?.holiday && <div style={styles.card}><div style={styles.holidayBanner}><span className="holidayCircle">!</span><div><strong>{selected.date}: Holiday</strong><div>{selected.holidayNote || "No note"}</div></div></div></div>}
     </>;
   };
 
@@ -3941,6 +4093,37 @@ export default function App() {
     </>;
   };
 
+  const familyAccountsPage = () => {
+    const byId = new Map<string, Student>(students.filter((s) => s.studentId).map((s) => [s.studentId!, s] as [string, Student]));
+    return <>
+      <div style={styles.pageHeader}>
+        <div><h1>👨‍👩‍👧 Family / Sibling Accounts</h1><p style={styles.muted}>One family login can contain multiple independent student profiles. Fees, attendance, tests and homework remain separate per child.</p></div>
+        <button style={styles.secondaryButton} onClick={loadFamilyAccounts}>🔄 Refresh</button>
+      </div>
+      {familyMessage && <div style={familyMessage.includes("success") || familyMessage.includes("updated") || familyMessage.includes("removed") ? styles.successBox : styles.errorBox}>{familyMessage}</div>}
+      <div style={styles.card}>
+        <h2>➕ Create Family Login</h2>
+        <p style={styles.muted}>Example: one email/password for Rahul and Priya. Each child still keeps a separate student record.</p>
+        <form onSubmit={createFamilyAccount}>
+          <div style={styles.formGrid}>
+            <FormField label="Family Name" value={familyName} onChange={setFamilyName} placeholder="Sharma Family"/>
+            <FormField label="Family Login Email" value={familyEmail} onChange={setFamilyEmail} type="email" placeholder="family@email.com"/>
+            <FormField label="Family Login Password" value={familyPassword} onChange={setFamilyPassword} type="password" placeholder="Minimum 6 characters"/>
+          </div>
+          <div style={{marginTop:14}}><strong>Select Students</strong><div className="familyStudentPicker">{students.filter(s=>s.studentId).map((student)=><label key={student.studentId} className="familyStudentOption"><input type="checkbox" checked={familySelectedStudentIds.includes(student.studentId!)} onChange={(e)=>setFamilySelectedStudentIds(prev=>e.target.checked ? [...new Set([...prev,student.studentId!])] : prev.filter(id=>id!==student.studentId))}/><span><strong>{student.name}</strong><small>{student.studentId} · {student.className || "Class not set"}{student.familyAccountUid ? " · Already linked" : ""}</small></span></label>)}</div></div>
+          <div style={styles.formActions}><button type="submit" style={styles.primaryButtonSmall} disabled={familySaving}>{familySaving ? "Creating..." : "👨‍👩‍👧 Create Family Login"}</button></div>
+        </form>
+      </div>
+      <div style={styles.card}>
+        <div className="familyCardGrid">{familyAccounts.length === 0 ? <div style={styles.emptyBox}>No family accounts yet.</div> : familyAccounts.map((family:any)=>{
+          const memberIds = Array.isArray(family.studentIds) ? family.studentIds : [];
+          const editorOpen = familyEditorUid === family.id;
+          return <div key={family.id} className="familyAccountCard"><div className="familyAccountHeader"><div><h3 style={{margin:0}}>{family.familyName || family.name || "Family"}</h3><p style={styles.muted}>{family.email || "No email"}</p></div><button style={styles.deleteButton} onClick={()=>deleteFamilyAccount(family)}>🗑️ Remove Login</button></div><div className="familyMemberList">{memberIds.length ? memberIds.map((sid:string)=>{const student=byId.get(sid);return <div key={sid} className="familyMemberRow"><span>{student?.name || sid} <small>{student?.className || ""}</small></span>{editorOpen && <button style={styles.textButton} onClick={()=>setFamilyEditorStudentIds(prev=>prev.filter(id=>id!==sid))}>Remove</button>}</div>}) : <div style={styles.muted}>No students linked.</div>}</div><div style={styles.formActions}><button style={styles.secondaryButton} onClick={()=>{setFamilyEditorUid(editorOpen?null:family.id);setFamilyEditorStudentIds(memberIds);}}>✏️ {editorOpen?"Close Member Editor":"Edit Members"}</button></div>{editorOpen && <><div className="familyStudentPicker compact">{students.filter(s=>s.studentId).map((student)=><label key={student.studentId} className="familyStudentOption"><input type="checkbox" checked={familyEditorStudentIds.includes(student.studentId!)} onChange={(e)=>setFamilyEditorStudentIds(prev=>e.target.checked ? [...new Set([...prev,student.studentId!])] : prev.filter(id=>id!==student.studentId))}/><span><strong>{student.name}</strong><small>{student.studentId}</small></span></label>)}</div><div style={styles.formActions}><button style={styles.primaryButtonSmall} onClick={()=>updateFamilyMembers(family,familyEditorStudentIds)}>💾 Save Members</button></div></>}</div>;
+        })}</div>
+      </div>
+    </>;
+  };
+
   /* =========================================================
      SIMPLE PAGES
   ========================================================= */
@@ -3976,7 +4159,7 @@ export default function App() {
   return (
     <div style={styles.appPage}>
       <header style={styles.topbar}>
-        <div>
+        <div className="desktopTopbarBrand">
           <h2 style={{ margin: 0 }}>🎓 Coaching Management System</h2>
 
           <p style={styles.topbarSub}>
@@ -3986,13 +4169,12 @@ export default function App() {
           </p>
         </div>
 
-        <button style={styles.logoutButton} onClick={handleLogout}>
-          Logout
-        </button>
+        <div style={{display:"flex",alignItems:"center",gap:8}}><button className="mobileMenuButton" onClick={()=>setMobileMenuOpen(v=>!v)} aria-label="Open menu">☰</button><button style={styles.logoutButton} onClick={handleLogout}>Logout</button></div>
       </header>
 
+      {mobileMenuOpen && <div className="mobileMenuBackdrop" onClick={()=>setMobileMenuOpen(false)} aria-hidden="true" />}
       <div style={styles.layout}>
-        <aside style={styles.sidebar}>
+        <aside className={mobileMenuOpen ? "mobileSidebar open" : "mobileSidebar"} style={styles.sidebar}>
           <button
             style={
               page === "dashboard" ? styles.navButtonActive : styles.navButton
@@ -4061,6 +4243,8 @@ export default function App() {
             ⭐ Class Representative
           </button>
 
+          {isAdmin && <button style={page === "families" ? styles.navButtonActive : styles.navButton} onClick={() => { setPage("families"); loadFamilyAccounts(); }}>👨‍👩‍👧 Family Accounts</button>}
+
           {isAdmin && <button style={page === "loginHistory" ? styles.navButtonActive : styles.navButton} onClick={() => setPage("loginHistory")}>🔐 Login History</button>}
 
           <button
@@ -4127,6 +4311,8 @@ export default function App() {
           {page === "homework" && (isAdmin || isCR) && homeworkPage()}
 
           {page === "cr" && (isAdmin ? crAdminPage() : crPublicPage())}
+
+          {page === "families" && isAdmin && familyAccountsPage()}
 
           {page === "loginHistory" && isAdmin && loginHistoryPage()}
 

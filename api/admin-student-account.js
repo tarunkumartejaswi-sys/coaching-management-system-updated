@@ -76,6 +76,81 @@ export default async function handler(req, res) {
     const studentAuthUid = body.studentAuthUid;
     const studentId = body.studentId;
 
+    if (["createFamily", "updateFamily", "unlinkFamilyStudent", "deleteFamily", "listFamilies"].includes(action)) {
+      const familyUid = body.familyUid;
+
+      if (action === "listFamilies") {
+        const snap = await firestore.collection("users").where("accountType", "==", "family").get();
+        const families = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        return res.status(200).json({ success: true, families });
+      }
+
+      if (action === "createFamily") {
+        const email = String(body.email || "").trim().toLowerCase();
+        const password = String(body.password || "");
+        const name = String(body.familyName || "Family").trim();
+        const studentIds = Array.isArray(body.studentIds) ? [...new Set(body.studentIds.filter(Boolean))] : [];
+        if (!email || password.length < 6 || !studentIds.length) return res.status(400).json({ error: "Family email, password (6+ chars), and at least one student are required." });
+        const familyUser = await adminAuth.createUser({ email, password, displayName: name });
+        await firestore.collection("users").doc(familyUser.uid).set({
+          name, familyName: name, role: "student", accountType: "family", studentIds, email, updatedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
+        });
+        for (const sid of studentIds) await firestore.collection("students").doc(sid).update({ familyAccountUid: familyUser.uid });
+        return res.status(200).json({ success: true, familyUid: familyUser.uid });
+      }
+
+      if (!familyUid) return res.status(400).json({ error: "Family UID is required." });
+      const familyRef = firestore.collection("users").doc(familyUid);
+      const familySnap = await familyRef.get();
+      if (!familySnap.exists || familySnap.data()?.accountType !== "family") return res.status(404).json({ error: "Family account not found." });
+      const familyData = familySnap.data() || {};
+      const existingIds = Array.isArray(familyData.studentIds) ? familyData.studentIds : [];
+
+      if (action === "updateFamily") {
+        const nextIds = [...new Set((Array.isArray(body.studentIds) ? body.studentIds : existingIds).filter(Boolean))];
+        const removed = existingIds.filter((sid) => !nextIds.includes(sid));
+        const added = nextIds.filter((sid) => !existingIds.includes(sid));
+        for (const sid of removed) {
+          const ref = firestore.collection("students").doc(sid);
+          const snap = await ref.get();
+          if (snap.exists && snap.data()?.familyAccountUid === familyUid) await ref.update({ familyAccountUid: null });
+        }
+        for (const sid of added) await firestore.collection("students").doc(sid).update({ familyAccountUid: familyUid });
+        const patch = { studentIds: nextIds, updatedAt: new Date().toISOString() };
+        if (body.familyName !== undefined) patch.familyName = String(body.familyName || "Family").trim();
+        if (body.email !== undefined) patch.email = String(body.email || familyData.email || "").trim().toLowerCase();
+        await familyRef.set(patch, { merge: true });
+        if (body.email || body.password) {
+          const updates = {};
+          if (body.email) updates.email = String(body.email).trim().toLowerCase();
+          if (body.password) { if (String(body.password).length < 6) return res.status(400).json({ error: "Password must contain at least 6 characters." }); updates.password = String(body.password); }
+          await adminAuth.updateUser(familyUid, updates);
+        }
+        return res.status(200).json({ success: true });
+      }
+
+      if (action === "unlinkFamilyStudent") {
+        const sid = String(body.studentId || "");
+        if (!sid) return res.status(400).json({ error: "Student ID is required." });
+        const ref = firestore.collection("students").doc(sid);
+        const snap = await ref.get();
+        if (snap.exists && snap.data()?.familyAccountUid === familyUid) await ref.update({ familyAccountUid: null });
+        await familyRef.set({ studentIds: existingIds.filter((id) => id !== sid), updatedAt: new Date().toISOString() }, { merge: true });
+        return res.status(200).json({ success: true });
+      }
+
+      if (action === "deleteFamily") {
+        for (const sid of existingIds) {
+          const ref = firestore.collection("students").doc(sid);
+          const snap = await ref.get();
+          if (snap.exists && snap.data()?.familyAccountUid === familyUid) await ref.update({ familyAccountUid: null });
+        }
+        await familyRef.delete();
+        try { await adminAuth.deleteUser(familyUid); } catch (error) { if (error?.code !== "auth/user-not-found") throw error; }
+        return res.status(200).json({ success: true });
+      }
+    }
+
     if (!studentAuthUid && !studentId) {
       return res.status(400).json({ error: "Student Auth UID or Student ID is required." });
     }

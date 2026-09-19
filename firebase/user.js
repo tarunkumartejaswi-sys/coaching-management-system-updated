@@ -1,7 +1,7 @@
 import { doc, getDoc } from "firebase/firestore";
 import db from "./firestore";
 
-/** @typedef {{ id?: string, name?: string, role?: string, studentId?: string, email?: string }} UserProfile */
+/** @typedef {{ id?: string, name?: string, role?: string, studentId?: string, studentIds?: string[], accountType?: string, familyName?: string, email?: string }} UserProfile */
 
 /** @returns {Promise<UserProfile|null>} */
 export const getUserProfile = async (uid) => {

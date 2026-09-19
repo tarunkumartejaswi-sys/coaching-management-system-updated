@@ -33,8 +33,16 @@ service cloud.firestore {
       return hasUserProfile() && userData().role in ['student', 'cr', 'CR', 'Cr', 'class_representative'];
     }
 
-    function ownsStudent(studentId) {
+    function individualOwnsStudent(studentId) {
       return isStudentLike() && userData().studentId == studentId;
+    }
+
+    function familyOwnsStudent(studentId) {
+      return isStudentLike() && userData().accountType == 'family' && studentId in userData().studentIds;
+    }
+
+    function ownsStudent(studentId) {
+      return individualOwnsStudent(studentId) || familyOwnsStudent(studentId);
     }
 
     match /users/{userId} {
@@ -46,7 +54,7 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create, delete: if isAdmin();
       allow update: if isAdmin() ||
-        (ownsStudent(studentId) &&
+        (individualOwnsStudent(studentId) &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
            'name', 'photoUrl'
          ]));
@@ -56,7 +64,7 @@ service cloud.firestore {
       allow read: if isAdmin() || isCR() || ownsStudent(studentId);
       allow create, delete: if isAdmin();
       allow update: if isAdmin() ||
-        (ownsStudent(studentId) &&
+        (individualOwnsStudent(studentId) &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
            'name', 'fatherName', 'motherName', 'address', 'mobile',
            'dob', 'gender', 'photoUrl'
