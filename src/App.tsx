@@ -49,7 +49,7 @@ import db, {
 
 import { getUserProfile } from "../firebase/user";
 import { getCrEligibility, isHomeworkPending, buildCrActivityEntry } from "./crLogic.js";
-import { getAttendanceStatsFromDays, getAttendanceStatus as getAttendanceStatusFromLogic } from "./attendanceLogic.js";
+import { getAttendanceStatsFromDays, getAttendanceStatus as getAttendanceStatusFromLogic, getAttendanceOverview } from "./attendanceLogic.js";
 import { buildMonthlyStudentReport, getTestPercentages } from "./studentReportLogic.js";
 import { getBillingMonthId, getMonthlyFeeStatus, summarizeFeeRecords, getPaymentMonthOptions, getFeeRenewalDate, normalizeRenewalDay } from "./feeLogic.js";
 import { buildLoginHistoryEntry } from "./sessionLogic.js";
@@ -2984,11 +2984,11 @@ export default function App() {
             {studentPage === "attendance" && (
               <div style={styles.card}>
                 <div style={styles.sectionTitleRow}><div><h2>📅 My Attendance</h2><p style={styles.muted}>This is your personal attendance. CR class management is available separately under the ⭐ CR Control Center.</p></div>{isCR && <span style={styles.paidBadge}>⭐ CR</span>}</div>
-                <div style={styles.feeHistoryGrid}>
-                  <div><span style={styles.smallLabel}>Present</span><strong>{presentDays}</strong></div>
-                  <div><span style={styles.smallLabel}>Absent</span><strong>{absentDays}</strong></div>
-                  <div><span style={styles.smallLabel}>Attendance</span><strong>{attendancePct.toFixed(0)}%</strong></div>
-                  <div><span style={styles.smallLabel}>Recorded Days</span><strong>{recordedAttendance.length}</strong></div>
+                <div className="attendanceSummaryGrid studentAttendanceSummary">
+                  <div className="attendanceSummaryCard working"><span>📆 Total Working Days</span><strong>{recordedAttendance.length}</strong></div>
+                  <div className="attendanceSummaryCard present"><span>🟢 Present</span><strong>{presentDays}</strong></div>
+                  <div className="attendanceSummaryCard absent"><span>🔴 Absent</span><strong>{absentDays}</strong></div>
+                  <div className="attendanceSummaryCard holiday"><span><span className="holidayCircle small" aria-hidden="true">!</span> Holidays</span><strong>{myAttendance.holidayDays}</strong></div>
                 </div>
                 <div className="calendarCard" style={styles.calendarCard}>
                   <div style={styles.calendarToolbar}><h3 style={{margin:0}}>{new Date(monthAttendance.y, monthAttendance.m, 1).toLocaleDateString("en-IN",{month:"long",year:"numeric"})}</h3><input style={styles.monthInput} type="month" value={studentCalendarMonth} onChange={e=>setStudentCalendarMonth(e.target.value)} /></div>
@@ -4111,6 +4111,9 @@ export default function App() {
 
   function attendancePage() {
     const selected = attendanceDays.find(a => a.date === attendanceDate);
+    const attendanceRoster = (students.length ? students : directoryStudents).filter(s => s.studentId);
+    const overview = getAttendanceOverview(attendanceDays, attendanceRoster);
+    const holidays = attendanceDays.filter(d => d.holiday).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
     const historyForStudent = (sid:string) => attendanceDays.filter(d => !d.holiday && d.records?.[sid]).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
     return <>
       <div style={styles.pageHeader}>
@@ -4119,12 +4122,22 @@ export default function App() {
       </div>
       {attendanceMessage&&<div style={attendanceMessage.includes("saved") || attendanceMessage.includes("success") || attendanceMessage.includes("sent") ? styles.successBox : styles.errorBox}>{attendanceMessage}</div>}
       <div style={styles.card}>
+        <div style={styles.sectionTitleRow}><div><h2>📊 Attendance Overview</h2><p style={styles.muted}>{isCR ? "All classes are included because CR has institute-wide attendance access." : "All student attendance records are included."}</p></div><span className="attendanceRolePill">{isCR ? "⭐ CR · All Classes" : "👑 Admin · All Classes"}</span></div>
+        <div className="attendanceSummaryGrid">
+          <div className="attendanceSummaryCard working"><span>📆 Total Working Days</span><strong>{overview.workingDays}</strong></div>
+          <div className="attendanceSummaryCard present"><span>🟢 Total Present</span><strong>{overview.present}</strong><small>{overview.percentage.toFixed(1)}% of marked attendance</small></div>
+          <div className="attendanceSummaryCard absent"><span>🔴 Total Absent</span><strong>{overview.absent}</strong></div>
+          <div className="attendanceSummaryCard holiday"><span><span className="holidayCircle small" aria-hidden="true">!</span> Holidays</span><strong>{overview.holidayDays}</strong></div>
+        </div>
+      </div>
+      <div style={styles.card}>
         <div style={styles.formGrid}><FormField label="Attendance Date" value={attendanceDate} onChange={(v)=>{setAttendanceDate(v);const row=attendanceDays.find(a=>a.date===v);setAttendanceHoliday(Boolean(row?.holiday));setAttendanceHolidayNote(row?.holidayNote||"");setAttendanceRecords(row?.records||{});}} type="date"/></div>
         {attendanceHoliday && <div style={styles.holidayBanner}><span className="holidayCircle" aria-hidden="true">!</span><div><strong>Holiday</strong><div>{attendanceHolidayNote || "Holiday note not added yet."}</div></div></div>}
         {attendanceHoliday && <div style={styles.formGrid}><FormField label="Holiday Note / Reason" value={attendanceHolidayNote} onChange={setAttendanceHolidayNote} placeholder="Sunday / Festival / Coaching closed" required={false}/></div>}
         {!attendanceHoliday && (attendanceLoading?<div style={styles.emptyBox}>Loading attendance...</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Batch</th><th style={styles.th}>Status</th></tr></thead><tbody>{(students.length ? students : directoryStudents).map(s=>s.studentId?<tr key={s.studentId}><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}>{s.batch||"-"}</td><td style={styles.td}><button disabled={false} style={(attendanceRecords[s.studentId]||"absent")==="present"?styles.doneStudentButton:styles.notDoneStudentButton} onClick={()=>setAttendanceRecords(prev=>({...prev,[s.studentId!]:prev[s.studentId!]==="present"?"absent":"present"}))}>{(attendanceRecords[s.studentId]||"absent")==="present"?"✓ Present":"○ Absent"}</button></td></tr>:null)}</tbody></table></div>)}
       </div>
-      <div style={styles.card}><h2>📊 Attendance Summary</h2><div style={styles.grid}>{(students.length ? students : directoryStudents).map(s=>{if(!s.studentId)return null;const rows=historyForStudent(s.studentId);const present=rows.filter(r=>r.records?.[s.studentId]==="present").length;const pct=rows.length?present/rows.length*100:0;return <div key={s.studentId} style={styles.summaryMiniCard}><strong>{s.name}</strong><span>{s.className}</span><b>{pct.toFixed(0)}%</b><small>{present}/{rows.length} working attendance days</small></div>})}</div></div>
+      <div style={styles.card}><div className={"sectionTitleRow"} style={styles.sectionTitleRow}><div><h2>📋 Student Attendance Summary</h2><p style={styles.muted}>Each student is shown with working-day, present, absent and holiday counts.</p></div></div><div className="attendanceStudentGrid">{attendanceRoster.map(s=>{const stats=getAttendanceStats(s.studentId, s.authUid);return <div key={s.studentId} className="attendanceStudentCard"><div><strong>{s.name}</strong><small>{s.className || "Class"}{s.batch?` · ${s.batch}`:""}</small></div><div className="attendanceStudentMetrics"><span><b>{stats.workingDays}</b><small>Working</small></span><span><b className="presentText">{stats.present}</b><small>Present</small></span><span><b className="absentText">{stats.absent}</b><small>Absent</small></span><span><b className="holidayText">{stats.holidayDays}</b><small>Holiday</small></span></div><div className="attendancePercentLine">Attendance <strong>{stats.percentage.toFixed(1)}%</strong></div></div>})}</div></div>
+      <div style={styles.card}><div className={"sectionTitleRow"} style={styles.sectionTitleRow}><div><h2>🔴 Holiday Register</h2><p style={styles.muted}>Holidays are excluded from attendance percentage.</p></div></div>{holidays.length===0?<div style={styles.emptyBox}>No holidays recorded.</div>:<div className="holidayList">{holidays.slice(0,30).map((row)=><div key={row.date} className="holidayListItem"><span className="holidayCircle" aria-hidden="true">!</span><div><strong>{row.date}</strong><span>{new Date(`${row.date}T12:00:00`).toLocaleDateString("en-IN",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}</span><small>{row.holidayNote || "Holiday"}</small></div></div>)}</div>}</div>
       {selected?.holiday && <div style={styles.card}><div style={styles.holidayBanner}><span className="holidayCircle">!</span><div><strong>{selected.date}: Holiday</strong><div>{selected.holidayNote || "No note"}</div></div></div></div>}
     </>;
   };

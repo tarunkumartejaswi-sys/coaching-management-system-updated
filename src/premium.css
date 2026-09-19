@@ -199,3 +199,24 @@ radial-gradient(circle at 90% 20%,rgba(14,165,233,.08),transparent 24%),#f6f8fc}
   .bulkHomeworkCallout{flex-direction:column;align-items:flex-start}
   .homeworkTab,.homeworkClassTab,.crControlTab{padding:9px 11px;font-size:12px}
 }
+
+/* Attendance summary and holiday UI */
+.attendanceSummaryGrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.attendanceSummaryCard{border:1px solid #e5eaf1;border-radius:16px;padding:15px;background:#fff;display:flex;flex-direction:column;gap:6px;min-height:94px}
+.attendanceSummaryCard span{font-size:13px;font-weight:800;color:#475569;display:flex;align-items:center;gap:7px}
+.attendanceSummaryCard strong{font-size:28px;line-height:1}
+.attendanceSummaryCard small{color:#64748b}
+.attendanceSummaryCard.present{border-color:#bbf7d0;background:#f0fdf4}.attendanceSummaryCard.present strong{color:#15803d}
+.attendanceSummaryCard.absent{border-color:#fecaca;background:#fff7f7}.attendanceSummaryCard.absent strong{color:#dc2626}
+.attendanceSummaryCard.holiday{border-color:#fecaca;background:#fff5f5}.attendanceSummaryCard.holiday strong{color:#b91c1c}
+.attendanceSummaryCard.working{border-color:#dbeafe;background:#f8fbff}.attendanceSummaryCard.working strong{color:#1d4ed8}
+.attendanceRolePill{display:inline-flex;align-items:center;padding:7px 10px;border-radius:999px;background:#f1f5f9;color:#334155;font-size:12px;font-weight:900}
+.holidayCircle.small{width:22px;height:22px;font-size:12px}
+.attendanceStudentGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.attendanceStudentCard{border:1px solid #e5eaf1;border-radius:15px;padding:14px;background:linear-gradient(135deg,#fff,#f8fafc);display:flex;flex-direction:column;gap:10px}
+.attendanceStudentCard>div:first-child{display:flex;flex-direction:column;gap:3px}.attendanceStudentCard>div:first-child small{color:#64748b}
+.attendanceStudentMetrics{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}.attendanceStudentMetrics span{display:flex;flex-direction:column;gap:2px;text-align:center;padding:8px 4px;border-radius:10px;background:#f8fafc}.attendanceStudentMetrics b{font-size:18px}.attendanceStudentMetrics small{font-size:10px;color:#64748b}
+.presentText{color:#15803d}.absentText{color:#dc2626}.holidayText{color:#b91c1c}.attendancePercentLine{font-size:12px;color:#64748b}.attendancePercentLine strong{color:#0f172a;margin-left:4px}
+.holidayList{display:flex;flex-direction:column;gap:9px}.holidayListItem{display:flex;align-items:center;gap:11px;border:1px solid #fecaca;background:#fff7f7;border-radius:13px;padding:11px 13px}.holidayListItem>div{display:flex;flex-direction:column;gap:2px}.holidayListItem span{font-size:12px;color:#7f1d1d}.holidayListItem small{color:#991b1b}
+@media (max-width:900px){.attendanceSummaryGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.attendanceStudentGrid{grid-template-columns:1fr}}
+@media (max-width:520px){.attendanceSummaryGrid{grid-template-columns:1fr}.attendanceSummaryCard strong{font-size:24px}.attendanceStudentMetrics{grid-template-columns:repeat(2,1fr)}}
