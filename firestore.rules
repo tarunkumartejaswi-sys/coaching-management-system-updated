@@ -64,6 +64,8 @@ service cloud.firestore {
       allow read: if isAdmin() || isCR() || ownsStudent(studentId);
       allow create, delete: if isAdmin();
       allow update: if isAdmin() ||
+        (isCR() &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attendance'])) ||
         (individualOwnsStudent(studentId) &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
            'name', 'fatherName', 'motherName', 'address', 'mobile',
@@ -82,7 +84,7 @@ service cloud.firestore {
 
     match /notices/{noticeId} {
       allow read: if signedIn();
-      allow create, update, delete: if isAdmin();
+      allow create, update, delete: if isAdmin() || isCR();
     }
 
     match /tests/{testId} {
@@ -92,12 +94,12 @@ service cloud.firestore {
 
     match /attendance/{dateId} {
       allow read: if signedIn();
-      allow create, update, delete: if isAdmin();
+      allow create, update, delete: if isAdmin() || isCR();
     }
 
     match /homework/{homeworkId} {
       allow read: if signedIn();
-      allow create, update, delete: if isAdmin();
+      allow create, update, delete: if isAdmin() || isCR();
     }
 
     match /fees/{studentId} {
@@ -135,6 +137,13 @@ service cloud.firestore {
     match /classRepresentatives/{crId} {
       allow read: if signedIn();
       allow create, update, delete: if isAdmin();
+    }
+
+
+    match /crActivityHistory/{activityId} {
+      allow read: if isAdmin() || (isCR() && resource.data.performedByUid == request.auth.uid);
+      allow create: if isCR() && request.resource.data.performedByUid == request.auth.uid;
+      allow update, delete: if isAdmin();
     }
 
     match /crChangeRequests/{requestId} {

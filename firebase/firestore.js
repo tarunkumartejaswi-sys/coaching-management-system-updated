@@ -410,6 +410,29 @@ export const createCrChangeRequest = async (request) => {
   return ref.id;
 };
 
+
+
+/* =========================================
+   CR ACTIVITY HISTORY
+========================================= */
+
+export const createCrActivity = async (activity) => {
+  const ref = doc(collection(db, "crActivityHistory"));
+  await setDoc(ref, {
+    ...activity,
+    createdAt: activity?.createdAt || new Date().toISOString(),
+  });
+  return ref.id;
+};
+
+export const getCrActivityHistory = async (performedByUid = "") => {
+  const base = collection(db, "crActivityHistory");
+  const activityQuery = performedByUid ? query(base, where("performedByUid", "==", performedByUid)) : base;
+  const snapshot = await getDocs(activityQuery);
+  return snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+};
 export const updateCrChangeRequest = async (requestId, patch) => {
   if (!requestId) throw new Error("Request ID is required");
   await updateDoc(doc(db, "crChangeRequests", requestId), {

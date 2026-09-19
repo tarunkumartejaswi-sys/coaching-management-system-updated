@@ -16,14 +16,16 @@ test('homework has class-wise tabs and a separate defaulters tab', () => {
 test('admin can create the same homework for every active class in one action', () => {
   assert.match(appSource, /homeworkAllClasses/);
   assert.match(appSource, /Same Homework to Every Class/);
-  assert.match(appSource, /Promise\.all\(targetClasses\.map\(className => addHomework/);
+  assert.match(appSource, /Promise\.all\(targetClasses\.map/);
+  assert.match(appSource, /createdRows/);
 });
 
-test('CR keeps personal homework separate from the CR control center', () => {
+test('CR keeps personal homework separate from the all-class CR control center', () => {
   assert.match(appSource, /Your personal homework only/);
   assert.match(appSource, /crControlTab/);
   assert.match(appSource, /crControlTab === "homework"/);
-  assert.match(appSource, /Manage homework only for your class/);
+  assert.match(appSource, /All classes/);
+  assert.match(appSource, /Every CR action is recorded/);
 });
 
 test('parent ID is available for family accounts and login history', () => {

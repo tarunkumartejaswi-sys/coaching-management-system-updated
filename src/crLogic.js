@@ -30,3 +30,34 @@ export function isHomeworkPending(item, studentId, today = new Date().toISOStrin
   if (dueDate && dueDate > today) return false;
   return true;
 }
+
+
+export function buildCrActivityEntry({
+  action,
+  module,
+  performedByUid,
+  performedByName,
+  crStudentId,
+  targetId = "",
+  targetLabel = "",
+  className = "",
+  details = null,
+  before = null,
+  after = null,
+  createdAt = new Date().toISOString(),
+} = {}) {
+  return {
+    action: String(action || "unknown"),
+    module: String(module || "general"),
+    performedByUid: String(performedByUid || ""),
+    performedByName: String(performedByName || "Class Representative"),
+    crStudentId: String(crStudentId || ""),
+    targetId: String(targetId || ""),
+    targetLabel: String(targetLabel || ""),
+    className: String(className || ""),
+    details,
+    before,
+    after,
+    createdAt,
+  };
+}

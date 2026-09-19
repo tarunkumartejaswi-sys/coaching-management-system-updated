@@ -43,10 +43,12 @@ import db, {
   touchUserSession,
   getLoginHistory,
   getUserSessions,
+  createCrActivity,
+  getCrActivityHistory,
 } from "../firebase/firestore";
 
 import { getUserProfile } from "../firebase/user";
-import { getCrEligibility, isHomeworkPending } from "./crLogic.js";
+import { getCrEligibility, isHomeworkPending, buildCrActivityEntry } from "./crLogic.js";
 import { getAttendanceStatsFromDays, getAttendanceStatus as getAttendanceStatusFromLogic } from "./attendanceLogic.js";
 import { buildMonthlyStudentReport, getTestPercentages } from "./studentReportLogic.js";
 import { getBillingMonthId, getMonthlyFeeStatus, summarizeFeeRecords, getPaymentMonthOptions, getFeeRenewalDate, normalizeRenewalDay } from "./feeLogic.js";
@@ -273,6 +275,9 @@ export default function App() {
   const [crRequests, setCrRequests] = useState<any[]>([]);
   const [crMessage, setCrMessage] = useState("");
   const [crLoading, setCrLoading] = useState(false);
+  const [crActivityHistory, setCrActivityHistory] = useState<any[]>([]);
+  const [crActivityLoading, setCrActivityLoading] = useState(false);
+  const [editingNotice, setEditingNotice] = useState<Notice | null>(null);
   const [crCriteria, setCrCriteria] = useState({
     minAttendance: 90,
     minAverage: 80,
@@ -354,7 +359,7 @@ export default function App() {
   const [homeworkView, setHomeworkView] = useState<"classes" | "defaulters">("classes");
   const [homeworkSelectedClass, setHomeworkSelectedClass] = useState("ALL");
   const [homeworkAllClasses, setHomeworkAllClasses] = useState(false);
-  const [crControlTab, setCrControlTab] = useState<"overview" | "attendance" | "homework">("overview");
+  const [crControlTab, setCrControlTab] = useState<"overview" | "attendance" | "homework" | "notices" | "history">("overview");
 
   /* =========================================================
      TESTS & RESULTS
@@ -1087,6 +1092,42 @@ export default function App() {
 
   const [editMessage, setEditMessage] = useState("");
 
+  const logCrActivity = async ({
+    action,
+    module,
+    targetId = "",
+    targetLabel = "",
+    className = "All Classes",
+    details = null,
+    before = null,
+    after = null,
+  }: any) => {
+    if (!isCR || !user?.uid) return;
+    const entry = buildCrActivityEntry({
+      action, module, targetId, targetLabel, className, details, before, after,
+      performedByUid: user.uid,
+      performedByName: profile?.name || "Class Representative",
+      crStudentId: profile?.studentId || "",
+    });
+    await createCrActivity(entry);
+    setCrActivityHistory((current) => [
+      { id: `local-${Date.now()}`, ...entry },
+      ...current,
+    ]);
+  };
+
+  const loadCrActivityHistory = async () => {
+    setCrActivityLoading(true);
+    try {
+      const rows = await getCrActivityHistory(isAdmin ? "" : (user?.uid || ""));
+      setCrActivityHistory(rows);
+    } catch (error: any) {
+      setCrMessage(`Unable to load CR activity history: ${error?.message || "Unknown error"}`);
+    } finally {
+      setCrActivityLoading(false);
+    }
+  };
+
   const loadCrCriteria = async () => {
     try {
       const snap = await getDoc(doc(db, "crSettings", "eligibility"));
@@ -1719,7 +1760,7 @@ export default function App() {
   const openAddHomeworkForClass = (className?: string) => {
     if (!isAdmin && !isCR) return;
     resetHomeworkForm();
-    const targetClass = className || (isCR ? studentData?.className || "" : "");
+    const targetClass = className || "";
     setHomeworkSelectedClass(targetClass || "ALL");
     setHomeworkClass(targetClass || "");
     setHomeworkAllClasses(false);
@@ -1746,15 +1787,11 @@ export default function App() {
   const saveHomework = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isAdmin && !isCR) {
-      setHomeworkMessage("Only Admin or an assigned Class Representative can manage homework.");
+      setHomeworkMessage("Only Admin or an approved Class Representative can manage homework.");
       return;
     }
     if ((!homeworkClass && !homeworkAllClasses) || !homeworkTitle.trim() || !homeworkDescription.trim() || !homeworkDate) {
-      setHomeworkMessage("Select a class (or All Classes for Admin) and enter title, homework and date.");
-      return;
-    }
-    if (isCR && homeworkAllClasses) {
-      setHomeworkMessage("CR accounts can manage only their assigned class. Admin can use All Classes.");
+      setHomeworkMessage("Select a class (or All Classes) and enter title, homework and date.");
       return;
     }
 
@@ -1772,36 +1809,60 @@ export default function App() {
       year: selectedDate.getFullYear(),
       createdBy: profile?.name || (isCR ? "Class Representative" : "Admin"),
       createdByUid: user?.uid || "",
+      updatedAt: new Date().toISOString(),
     };
 
     setSavingHomework(true);
     setHomeworkMessage("");
     try {
-      if (isCR) {
+      if (editingHomework?.id) {
+        const before = { ...editingHomework };
         const payload = { ...basePayload, className: homeworkClass };
-        if (editingHomework?.id) {
-          await createCrChangeRequest({
-            type: "homework_edit", targetId: editingHomework.id, studentId: profile?.studentId || "",
-            submittedBy: user?.uid || "", submittedByName: profile?.name || "Class Representative", payload,
+        await updateHomework(editingHomework.id, payload);
+        if (isCR) {
+          await logCrActivity({
+            action: "edited",
+            module: "homework",
+            targetId: editingHomework.id,
+            targetLabel: editingHomework.title || "Homework",
+            className: homeworkClass || editingHomework.className || "All Classes",
+            before,
+            after: payload,
           });
-          setHomeworkMessage("Homework edit sent to Admin for approval. ⏳");
-        } else {
-          await createCrChangeRequest({
-            type: "homework_add", targetId: "", studentId: profile?.studentId || "",
-            submittedBy: user?.uid || "", submittedByName: profile?.name || "Class Representative", payload,
-          });
-          setHomeworkMessage("Homework request sent to Admin for approval. ⏳");
         }
-      } else if (editingHomework?.id) {
-        await updateHomework(editingHomework.id, { ...basePayload, className: homeworkClass });
-        setHomeworkMessage("Homework updated successfully! ✅");
+        setHomeworkMessage(isCR ? "Homework updated successfully and recorded in CR history. ✅" : "Homework updated successfully! ✅");
       } else if (homeworkAllClasses) {
         const targetClasses = Array.from(new Set((students.length ? students : directoryStudents).map(s => s.className).filter(Boolean))) as string[];
         if (!targetClasses.length) throw new Error("No student classes are available.");
-        await Promise.all(targetClasses.map(className => addHomework({ ...basePayload, className })));
+        const createdRows = await Promise.all(targetClasses.map(async (className) => ({
+          className,
+          id: await addHomework({ ...basePayload, className }),
+        })));
+        if (isCR) {
+          await Promise.all(createdRows.map(({ className, id }) => logCrActivity({
+            action: "added",
+            module: "homework",
+            targetId: id || "",
+            targetLabel: basePayload.title,
+            className,
+            after: { ...basePayload, className },
+            details: { bulk: true, classes: targetClasses.length },
+          })));
+        }
         setHomeworkMessage(`Same homework assigned to ${targetClasses.length} classes successfully! ✅`);
       } else {
-        await addHomework({ ...basePayload, className: homeworkClass });
+        const payload = { ...basePayload, className: homeworkClass };
+        const id = await addHomework(payload);
+        if (isCR) {
+          await logCrActivity({
+            action: "added",
+            module: "homework",
+            targetId: id || "",
+            targetLabel: payload.title,
+            className: homeworkClass || "All Classes",
+            after: payload,
+          });
+        }
         setHomeworkMessage("Homework added successfully! ✅");
       }
       await loadHomework();
@@ -1818,24 +1879,22 @@ export default function App() {
     if ((!isAdmin && !isCR) || !item.id) return;
     if (!window.confirm(`Delete homework: ${item.title || "this homework"}?`)) return;
     try {
+      await deleteHomework(item.id);
       if (isCR) {
-        await createCrChangeRequest({
-          type: "homework_delete", targetId: item.id, studentId: profile?.studentId || "",
-          submittedBy: user?.uid || "", submittedByName: profile?.name || "Class Representative", payload: { homework: item },
+        await logCrActivity({
+          action: "deleted",
+          module: "homework",
+          targetId: item.id,
+          targetLabel: item.title || "Homework",
+          className: item.className || "All Classes",
+          before: item,
         });
-        setHomeworkMessage("Homework deletion sent to Admin for approval. ⏳");
-      } else {
-        await deleteHomework(item.id);
-        await loadHomework();
-        setHomeworkMessage("Homework deleted successfully. 🗑️");
       }
+      await loadHomework();
+      setHomeworkMessage(isCR ? "Homework deleted and recorded in CR history. 🗑️" : "Homework deleted successfully. 🗑️");
     } catch (error: any) {
       console.error("Homework delete error:", error);
-      setHomeworkMessage(
-        `Firebase Error: ${error?.code || "unknown-error"} | ${
-          error?.message || "Unable to delete homework"
-        }`
-      );
+      setHomeworkMessage(`Firebase Error: ${error?.code || "unknown-error"} | ${error?.message || "Unable to delete homework"}`);
     }
   };
 
@@ -1852,7 +1911,8 @@ export default function App() {
   useEffect(() => {
     if (page === "homework" && (isAdmin || isCR)) loadHomework();
     if ((page === "homework" || page === "attendance" || page === "cr") && (isAdmin || isCR)) loadCrRequests();
-  }, [page, isAdmin, isCR]);
+    if (page === "cr" && (isAdmin || isCR)) loadCrActivityHistory();
+  }, [page, isAdmin, isCR, profile?.studentId]);
 
   /* =========================================================
      CLASS REPRESENTATIVE WORKFLOW
@@ -2152,6 +2212,7 @@ export default function App() {
   const saveAttendance = async () => {
     if ((!isAdmin && !isCR) || !attendanceDate) return;
     const d = new Date(`${attendanceDate}T12:00:00`);
+    const existing = attendanceDays.find((row) => row.date === attendanceDate) || null;
     try {
       const payload = {
         date: attendanceDate,
@@ -2161,15 +2222,9 @@ export default function App() {
         holidayNote: attendanceHoliday ? attendanceHolidayNote.trim() : "",
         records: attendanceHoliday ? {} : attendanceRecords,
         updatedAt: new Date().toISOString(),
+        updatedBy: user?.uid || "",
+        updatedByName: profile?.name || (isCR ? "Class Representative" : "Admin"),
       };
-      if (isCR) {
-        await createCrChangeRequest({
-          type: "attendance_update", targetId: attendanceDate, studentId: profile?.studentId || "",
-          submittedBy: user?.uid || "", submittedByName: profile?.name || "Class Representative", payload,
-        });
-        setAttendanceMessage("Attendance changes sent to Admin for approval. ⏳");
-        return;
-      }
       await setDoc(doc(db, "attendance", attendanceDate), payload, { merge: true });
 
       const combinedDays = [...attendanceDays.filter((row) => row.date !== attendanceDate), payload];
@@ -2179,37 +2234,125 @@ export default function App() {
         const percentage = rows.length ? Number(((present / rows.length) * 100).toFixed(1)) : 0;
         await updateDoc(doc(db, "students", student.studentId!), { attendance: percentage });
       }));
+
+      if (isCR) {
+        await logCrActivity({
+          action: attendanceHoliday ? (existing?.holiday ? "holiday_updated" : "holiday_added") : "attendance_updated",
+          module: "attendance",
+          targetId: attendanceDate,
+          targetLabel: attendanceHoliday ? `Holiday · ${attendanceHolidayNote || attendanceDate}` : `Attendance · ${attendanceDate}`,
+          className: "All Classes",
+          before: existing,
+          after: payload,
+        });
+      }
+
       await loadAttendance();
       setStudents(await getStudents());
       setAttendanceMessage(attendanceHoliday ? "Holiday saved. It is excluded from attendance percentage. ✅" : "Attendance saved and student dashboards synced successfully! ✅");
-    } catch (error: any) { setAttendanceMessage(`Unable to save attendance: ${error?.message || "Unknown error"}`); }
+    } catch (error: any) {
+      setAttendanceMessage(`Unable to save attendance: ${error?.message || "Unknown error"}`);
+    }
   };
 
   const setAllAttendance = (status: "present" | "absent") => {
     const next: Record<string, "present" | "absent"> = {};
-    const roster = (students.length ? students : directoryStudents).filter((student) => !isCR || student.className === studentData?.className);
+    const roster = (students.length ? students : directoryStudents);
     roster.forEach((student) => { if (student.studentId) next[student.studentId] = status; });
     setAttendanceRecords(next);
   };
 
+  const openEditNotice = (notice: Notice) => {
+    if (!isAdmin && !isCR) return;
+    setEditingNotice(notice);
+    setNoticeTitle(notice.title || "");
+    setNoticeMessage(notice.message || "");
+    setNoticePriority(notice.priority || "normal");
+    setNoticeDate(notice.date || new Date().toISOString().slice(0, 10));
+    setNoticeStatus("");
+  };
+
+  const resetNoticeForm = () => {
+    setEditingNotice(null);
+    setNoticeTitle("");
+    setNoticeMessage("");
+    setNoticePriority("normal");
+    setNoticeDate(new Date().toISOString().slice(0, 10));
+  };
+
   const saveNotice = async (e: React.FormEvent) => {
-    e.preventDefault(); if (!isAdmin) return;
+    e.preventDefault();
+    if (!isAdmin && !isCR) return;
     if (!noticeTitle.trim() || !noticeMessage.trim()) { setNoticeStatus("Enter notice title and message."); return; }
     setNoticeSaving(true); setNoticeStatus("");
     try {
-      const ref = doc(collection(db, "notices"));
-      await setDoc(ref, { title: noticeTitle.trim(), message: noticeMessage.trim(), priority: noticePriority, date: noticeDate, audience: "all", createdAt: new Date().toISOString() });
-      setNoticeTitle(""); setNoticeMessage(""); setNoticePriority("normal"); setNoticeDate(new Date().toISOString().slice(0,10));
-      await loadNotices(); setNoticeStatus("Notice published successfully! ✅");
-    } catch (error: any) { setNoticeStatus(`Unable to publish notice: ${error?.message || "Unknown error"}`); }
-    finally { setNoticeSaving(false); }
+      const payload = {
+        title: noticeTitle.trim(),
+        message: noticeMessage.trim(),
+        priority: noticePriority,
+        date: noticeDate,
+        audience: "all",
+        updatedAt: new Date().toISOString(),
+        updatedBy: user?.uid || "",
+        updatedByName: profile?.name || (isCR ? "Class Representative" : "Admin"),
+      };
+      if (editingNotice?.id) {
+        const before = { ...editingNotice };
+        await updateDoc(doc(db, "notices", editingNotice.id), payload);
+        if (isCR) {
+          await logCrActivity({
+            action: "edited",
+            module: "notice",
+            targetId: editingNotice.id,
+            targetLabel: editingNotice.title || payload.title,
+            className: "All Classes",
+            before,
+            after: payload,
+          });
+        }
+        setNoticeStatus(isCR ? "Notice updated and recorded in CR history. ✅" : "Notice updated successfully! ✅");
+      } else {
+        const ref = doc(collection(db, "notices"));
+        await setDoc(ref, { ...payload, createdAt: new Date().toISOString(), createdBy: user?.uid || "", createdByName: profile?.name || (isCR ? "Class Representative" : "Admin") });
+        if (isCR) {
+          await logCrActivity({
+            action: "added",
+            module: "notice",
+            targetId: ref.id,
+            targetLabel: payload.title,
+            className: "All Classes",
+            after: payload,
+          });
+        }
+        setNoticeStatus(isCR ? "Notice published and recorded in CR history. ✅" : "Notice published successfully! ✅");
+      }
+      resetNoticeForm();
+      await loadNotices();
+    } catch (error: any) {
+      setNoticeStatus(`Unable to save notice: ${error?.message || "Unknown error"}`);
+    } finally { setNoticeSaving(false); }
   };
 
   const deleteNotice = async (notice: Notice) => {
-    if (!isAdmin || !notice.id) return;
+    if ((!isAdmin && !isCR) || !notice.id) return;
     if (!window.confirm(`Delete notice: ${notice.title || "this notice"}?`)) return;
-    await deleteDoc(doc(db, "notices", notice.id));
-    await loadNotices(); setNoticeStatus("Notice deleted.");
+    try {
+      await deleteDoc(doc(db, "notices", notice.id));
+      if (isCR) {
+        await logCrActivity({
+          action: "deleted",
+          module: "notice",
+          targetId: notice.id,
+          targetLabel: notice.title || "Notice",
+          className: "All Classes",
+          before: notice,
+        });
+      }
+      await loadNotices();
+      setNoticeStatus(isCR ? "Notice deleted and recorded in CR history. 🗑️" : "Notice deleted.");
+    } catch (error: any) {
+      setNoticeStatus(`Unable to delete notice: ${error?.message || "Unknown error"}`);
+    }
   };
 
   const homeworkForStudent = (student: Student | null) => homework.filter((item) => {
@@ -2218,6 +2361,32 @@ export default function App() {
     const assigned = Array.isArray((item as any).assignedStudentIds) ? (item as any).assignedStudentIds : null;
     return classMatch && batchMatch && (!assigned || assigned.length === 0 || assigned.includes(student?.studentId));
   });
+
+  const toggleHomeworkCompletion = async (item: Homework, studentId: string) => {
+    if (!item.id || !studentId) return;
+    const completion = ((item as any).completion || {}) as Record<string, boolean>;
+    const done = Boolean(completion[studentId]);
+    const next = { ...completion, [studentId]: !done };
+    try {
+      await updateHomework(item.id, { ...(item as any), completion: next, updatedAt: new Date().toISOString() });
+      if (isCR) {
+        const student = students.find((row) => row.studentId === studentId);
+        await logCrActivity({
+          action: "completion_updated",
+          module: "homework",
+          targetId: item.id,
+          targetLabel: item.title || "Homework",
+          className: item.className || "All Classes",
+          details: { studentId, studentName: student?.name || studentId, completed: !done },
+          before: { completed: done },
+          after: { completed: !done },
+        });
+      }
+      await loadHomework();
+    } catch (error: any) {
+      setHomeworkMessage(`Unable to update completion: ${error?.message || "Unknown error"}`);
+    }
+  };
 
   const homeworkDefaulters = (item: Homework) => {
     const completion = ((item as any).completion || {}) as Record<string, boolean>;
@@ -2902,51 +3071,37 @@ export default function App() {
               </div>
             )}
 
-            {studentPage === "cr" && (
+            {studentPage === "cr" && isCR && (
               <>
                 <div className="crControlTabs" role="tablist" aria-label="CR tools">
-                  <button type="button" className={crControlTab === "overview" ? "crControlTab active" : "crControlTab"} onClick={() => setCrControlTab("overview")}>⭐ CR Overview</button>
+                  <button type="button" className={crControlTab === "overview" ? "crControlTab active" : "crControlTab"} onClick={() => setCrControlTab("overview")}>⭐ Overview</button>
                   <button type="button" className={crControlTab === "attendance" ? "crControlTab active" : "crControlTab"} onClick={() => setCrControlTab("attendance")}>📅 Attendance</button>
                   <button type="button" className={crControlTab === "homework" ? "crControlTab active" : "crControlTab"} onClick={() => setCrControlTab("homework")}>📚 Homework</button>
+                  <button type="button" className={crControlTab === "notices" ? "crControlTab active" : "crControlTab"} onClick={() => setCrControlTab("notices")}>📢 Notices</button>
+                  <button type="button" className={crControlTab === "history" ? "crControlTab active" : "crControlTab"} onClick={() => { setCrControlTab("history"); loadCrActivityHistory(); }}>🧾 My CR History</button>
                 </div>
 
-                {crControlTab === "overview" && <>
+                {crControlTab === "overview" && <div>
                   <div style={styles.card}>
-                    <div style={styles.sectionTitleRow}><div><h2>⭐ Class Representative</h2><p style={styles.muted}>Your personal student account stays separate. These are the additional CR controls.</p></div>{studentData?.isCR && <span style={styles.paidBadge}>⭐ CURRENT CR</span>}</div>
-                    {(() => { const classCrs = directoryStudents.filter(s => s.isCR && s.className === studentData?.className); return classCrs.length ? <div style={styles.crPublicGrid}>{classCrs.map(cr => <div key={cr.studentId} style={styles.crPublicCard}><div style={styles.avatarLarge}>{cr.photoUrl ? <img src={cr.photoUrl} alt="Class Representative" style={styles.avatarImage}/> : "⭐"}</div><div><h3 style={{margin:"0 0 4px"}}>{cr.name}</h3><p style={styles.muted}>{cr.className}{cr.batch ? ` · ${cr.batch}` : ""}</p><span style={styles.paidBadge}>CLASS REPRESENTATIVE</span>{cr.crSince && <small style={{display:"block",marginTop:8,color:"#64748b"}}>CR since {new Date(cr.crSince).toLocaleDateString("en-IN")}</small>}</div></div>)}</div> : <div style={styles.emptyBox}>No Class Representative has been assigned in this class yet.</div>; })()}
+                    <div style={styles.sectionTitleRow}><div><h2>⭐ Class Representative Control Center</h2><p style={styles.muted}>Your normal student account remains separate. CR permissions now cover <strong>all classes</strong>, like Admin.</p></div><span style={styles.paidBadge}>⭐ ACTIVE CR</span></div>
+                    <div style={styles.grid}><StatCard title="All Students" value={String(students.length)} icon="👨‍🎓"/><StatCard title="All Classes" value={String(new Set(students.map(s=>s.className).filter(Boolean)).size)} icon="🏫"/><StatCard title="Homework" value={String(homework.length)} icon="📚"/><StatCard title="Notices" value={String(notices.length)} icon="📢"/></div>
+                    <div style={styles.infoNotice}>You can manage Attendance, Holidays, Homework, Homework Defaulters and Notices for every class. Every CR action is automatically recorded in Admin CR Activity History.</div>
                   </div>
-                  <div style={styles.card}>
-                    <div style={styles.sectionTitleRow}><div><h2>📋 My CR Eligibility</h2><p style={styles.muted}>All five criteria must be satisfied before you can apply.</p></div><span style={crEligibility.eligible ? styles.paidBadge : styles.pendingBadge}>{crEligibility.eligible ? "ELIGIBLE" : "NOT ELIGIBLE"}</span></div>
-                    <div style={styles.eligibilityList}>
-                      <div style={styles.eligibilityRow}><span>{totalFeePending <= crCriteria.maxFeeDue ? "✅" : "❌"}</span><strong>{`Fee pending ≤ ₹${crCriteria.maxFeeDue}`}</strong><small>₹{totalFeePending.toLocaleString("en-IN")} pending</small></div>
-                      <div style={styles.eligibilityRow}><span>{myAttendance.percentage > crCriteria.minAttendance ? "✅" : "❌"}</span><strong>{`Attendance > ${crCriteria.minAttendance}%`}</strong><small>{myAttendance.percentage.toFixed(1)}%</small></div>
-                      <div style={styles.eligibilityRow}><span>{myRank && myRank.rank >= 1 && myRank.rank <= crCriteria.maxRank ? "✅" : "❌"}</span><strong>{`Rank 1–${crCriteria.maxRank}`}</strong><small>{myRank ? `#${myRank.rank}` : "Not ranked"}</small></div>
-                      <div style={styles.eligibilityRow}><span>{myAverage > crCriteria.minAverage ? "✅" : "❌"}</span><strong>{`Average > ${crCriteria.minAverage}%`}</strong><small>{myAverage.toFixed(1)}%</small></div>
-                      <div style={styles.eligibilityRow}><span>{pendingHomework.length <= crCriteria.maxPendingHomework ? "✅" : "❌"}</span><strong>{`Pending homework ≤ ${crCriteria.maxPendingHomework}`}</strong><small>{pendingHomework.length <= crCriteria.maxPendingHomework ? "All due work done" : `${pendingHomework.length} pending`}</small></div>
-                    </div>
-                    {!studentData?.isCR && crEligibility.eligible && <div style={styles.formActions}><button style={styles.primaryButtonSmall} disabled={crLoading || hasPendingCrApplication} onClick={applyForCr}>{hasPendingCrApplication ? "⏳ Application Pending" : "⭐ Apply for CR"}</button></div>}
-                    {!studentData?.isCR && !crEligibility.eligible && <div style={styles.infoNotice}>Complete all five criteria to unlock the CR application.</div>}
-                    {studentData?.isCR && <div style={styles.paidNotice}>⭐ You are an active Class Representative. Attendance and homework changes you submit require Admin approval.</div>}
-                    {crMessage && <div style={crMessage.includes("sent") ? styles.infoNotice : styles.errorBox}>{crMessage}</div>}
-                  </div>
-                </>}
+                  <div style={styles.card}><h2>🛡️ CR Permissions</h2><div style={styles.quickGrid}>
+                    <button style={styles.quickAction} onClick={()=>setCrControlTab("attendance")}><span style={{fontSize:24}}>📅</span><span><strong>Attendance + Holiday</strong><small style={styles.muted}>All classes</small></span></button>
+                    <button style={styles.quickAction} onClick={()=>setCrControlTab("homework")}><span style={{fontSize:24}}>📚</span><span><strong>Homework</strong><small style={styles.muted}>All classes + defaulters</small></span></button>
+                    <button style={styles.quickAction} onClick={()=>setCrControlTab("notices")}><span style={{fontSize:24}}>📢</span><span><strong>Notices</strong><small style={styles.muted}>Add, edit, delete</small></span></button>
+                    <button style={styles.quickAction} onClick={()=>{setCrControlTab("history");loadCrActivityHistory();}}><span style={{fontSize:24}}>🧾</span><span><strong>My CR History</strong><small style={styles.muted}>Every CR action</small></span></button>
+                  </div></div>
+                </div>}
 
-                {crControlTab === "attendance" && (
-                  <div>
-                    <div style={styles.pageHeader}><div><h1>📅 Class Attendance</h1><p style={styles.muted}>Manage attendance for your own class. Every CR change is sent to Admin for approval.</p></div><div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button style={styles.secondaryButton} onClick={()=>loadAttendance()}>🔄 Refresh</button><button style={styles.secondaryButton} onClick={()=>setAllAttendance("present")}>✓ Mark All Present</button><button style={styles.secondaryButton} onClick={()=>setAllAttendance("absent")}>✕ Mark All Absent</button><button style={styles.primaryButtonSmall} onClick={saveAttendance}>⏳ Submit for Approval</button></div></div>
-                    {attendanceMessage && <div style={attendanceMessage.includes("sent") || attendanceMessage.includes("success") ? styles.infoNotice : styles.errorBox}>{attendanceMessage}</div>}
-                    <div style={styles.card}>
-                      <div style={styles.formGrid}><FormField label="Attendance Date" value={attendanceDate} onChange={(v)=>{setAttendanceDate(v);const row=attendanceDays.find(a=>a.date===v);setAttendanceRecords(row?.records||{});}} type="date" /></div>
-                      {attendanceLoading ? <div style={styles.emptyBox}>Loading attendance...</div> : <div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Batch</th><th style={styles.th}>Status</th></tr></thead><tbody>{students.filter(s=>s.studentId && s.className===studentData?.className).map(s=>{const present=(attendanceRecords[s.studentId!]||"absent")==="present";return <tr key={s.studentId}><td style={styles.td}><strong>{s.name}</strong><div style={styles.muted}>{s.studentId}</div></td><td style={styles.td}>{s.className||"—"}</td><td style={styles.td}>{s.batch||"—"}</td><td style={styles.td}><button type="button" style={present?styles.doneStudentButton:styles.notDoneStudentButton} onClick={()=>setAttendanceRecords(prev=>({...prev,[s.studentId!]:present?"absent":"present"}))}>{present?"✓ Present":"○ Absent"}</button></td></tr>})}</tbody></table></div>}
-                    </div>
+                {crControlTab === "attendance" && <div>{attendancePage()}</div>}
+                {crControlTab === "homework" && <div>{homeworkPage()}</div>}
+                {crControlTab === "notices" && <div>{noticesPage()}</div>}
+                {crControlTab === "history" && <div>
+                  <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>🧾 My CR Activity History</h2><p style={styles.muted}>Your Attendance, Holiday, Homework and Notice actions.</p></div><button style={styles.secondaryButton} onClick={loadCrActivityHistory}>🔄 Refresh</button></div>
+                    {crActivityLoading?<div style={styles.emptyBox}>Loading history...</div>:crActivityHistory.length===0?<div style={styles.emptyBox}>No CR activity recorded yet.</div>:<div className="crActivityList">{crActivityHistory.slice(0,100).map((row:any)=><div key={row.id} className="crActivityItem"><div><strong>{row.performedByName || "You"}</strong><span className="crActivityPill">{String(row.module||"general").toUpperCase()}</span><span className="crActivityPill">{String(row.action||"action").replace(/_/g," ")}</span><div style={styles.muted}>{row.className || "All Classes"}{row.targetLabel?` · ${row.targetLabel}`:""}</div></div><div className="crActivityTime">{row.createdAt?new Date(row.createdAt).toLocaleString("en-IN"):"—"}</div></div>)}</div>}
                   </div>
-                )}
-
-                {crControlTab === "homework" && <div>
-                  <div style={styles.pageHeader}><div><h1>📚 Class Homework</h1><p style={styles.muted}>Manage homework only for your class. Add/edit/delete actions are submitted to Admin for approval.</p></div><div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button style={styles.secondaryButton} onClick={loadHomework}>🔄 Refresh</button><button style={styles.primaryButtonSmall} onClick={()=>openAddHomeworkForClass(studentData?.className)}>➕ Add Homework</button></div></div>
-                  {homeworkMessage && <div style={homeworkMessage.includes("success") || homeworkMessage.includes("approval") || homeworkMessage.includes("sent") ? styles.infoNotice : styles.errorBox}>{homeworkMessage}</div>}
-                  <div className="homeworkToolbar card" style={styles.card}><div className="homeworkTabRow"><button className={homeworkView === "classes" ? "homeworkTab active" : "homeworkTab"} onClick={()=>setHomeworkView("classes")}>📚 Class Homework</button><button className={homeworkView === "defaulters" ? "homeworkTab active" : "homeworkTab"} onClick={()=>setHomeworkView("defaulters")}>⚠ Defaulters</button></div><div className="homeworkClassTabs">{[studentData?.className || ""].filter(Boolean).map((c)=><button key={c} className={homeworkSelectedClass===c?"homeworkClassTab active":"homeworkClassTab"} onClick={()=>setHomeworkSelectedClass(c)}>{c}</button>)}</div></div>
-                  {homeworkView === "defaulters" ? <div className="card" style={styles.card}><h2>⚠ Homework Defaulters</h2>{(()=>{const roster=students.filter(s=>s.studentId&&s.className===studentData?.className);const rows=roster.map(s=>({student:s,pending:homeworkForStudent(s).filter(h=>!Boolean(((h as any).completion||{})[s.studentId!]))})).filter(x=>x.pending.length);return rows.length?rows.map(({student,pending})=><div key={student.studentId} style={styles.homeworkItem}><div style={styles.homeworkMeta}><strong>{student.name}</strong><span>{student.className}{student.batch?` · ${student.batch}`:""}</span></div><div className="defaulterHomeworkList">{pending.map(h=><div key={h.id}><strong>{h.title}</strong><small>{h.subject||"Homework"} · Due {h.dueDate||"No due date"}</small></div>)}</div><div style={styles.warningBox}>{pending.length} pending homework item(s)</div></div>):<div style={styles.emptyBox}>🎉 No homework defaulters in your class.</div>})()}</div> : <div style={styles.card}>{homework.filter(item=>item.className===studentData?.className || !item.className).length===0?<div style={styles.emptyBox}>No homework added for your class.</div>:homework.filter(item=>item.className===studentData?.className || !item.className).map(item=>{const roster=students.filter(s=>s.studentId&&homeworkForStudent(s).some(h=>h.id===item.id));const completion=((item as any).completion||{}) as Record<string,boolean>;return <div key={item.id} style={styles.homeworkItem}><div style={styles.homeworkMeta}><strong>{item.className||studentData?.className}{item.batch?` · ${item.batch}`:" · All batches"}</strong><span>{item.homeworkDate||""}{item.dueDate?` · Due ${item.dueDate}`:""}</span></div><h3 style={{margin:"8px 0 4px"}}>{item.subject?`${item.subject}: `:""}{item.title}</h3><p style={{margin:"0 0 8px",whiteSpace:"pre-wrap"}}>{item.description}</p><div style={styles.completionSummary}><strong>{roster.filter(s=>!completion[s.studentId!]).length}</strong> not completed · <strong>{roster.length}</strong> assigned</div><div style={styles.defaulterList}>{roster.map(s=>{const done=Boolean(completion[s.studentId!]);return <button key={s.studentId} type="button" style={done?styles.doneStudentButton:styles.notDoneStudentButton} onClick={async()=>{if(!item.id)return;const next={...completion,[s.studentId!]:!done};try{await createCrChangeRequest({type:"homework_completion",targetId:item.id,studentId:profile?.studentId||"",submittedBy:user?.uid||"",submittedByName:profile?.name||"Class Representative",payload:{completion:next}});setHomeworkMessage("Homework completion change sent to Admin for approval. ⏳");}catch(error:any){setHomeworkMessage(`Unable to submit completion change: ${error?.message||"Unknown error"}`);}}}>{done?"✓":"○"} {s.name}</button>})}</div><div style={styles.formActions}><button style={styles.editButton} onClick={()=>{setHomeworkSelectedClass(studentData?.className||"ALL");openEditHomework(item)}}>✏️ Edit</button><button style={styles.deleteButton} onClick={()=>removeHomework(item)}>🗑️ Delete</button></div></div>})}</div>}
                 </div>}
               </>
             )}
@@ -3614,11 +3769,11 @@ export default function App() {
     const visibleCrs = isAdmin ? classCrs : (myClassCrs.length ? myClassCrs : classCrs);
     return <>
       <div style={styles.pageHeader}>
-        <div><h1>⭐ Class Representative</h1><p style={styles.muted}>{isCR ? "Your class-management workspace." : "View the current Class Representative."}</p></div>
+        <div><h1>⭐ Class Representative</h1><p style={styles.muted}>{isCR ? "Your personal student dashboard plus an all-class CR management workspace." : "View the current Class Representative."}</p></div>
       </div>
       {isCR && <div style={styles.grid}>
         <StatCard title="My Class" value={studentData?.className || "—"} icon="🏫" />
-        <StatCard title="Students" value={String(students.filter(s => !studentData?.className || s.className === studentData.className).length)} icon="👨‍🎓" />
+        <StatCard title="All Students" value={String(students.length)} icon="👨‍🎓" />
         <StatCard title="Attendance" value="Manage" icon="📅" />
         <StatCard title="Homework" value="Manage" icon="📚" />
       </div>}
@@ -3630,10 +3785,11 @@ export default function App() {
             <div><strong style={{fontSize:17}}>{cr.name || cr.studentId}</strong><div style={styles.muted}>{cr.className || "Class"}{cr.batch ? ` · ${cr.batch}` : ""}</div>{cr.crSince && <small style={styles.muted}>CR since {new Date(cr.crSince).toLocaleDateString("en-IN")}</small>}</div>
           </div>)}</div>}
       </div>
-      {isCR && <><div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>🛡️ CR Control Center</h2><p style={styles.muted}>Manage only your assigned class. Official changes require Admin approval.</p></div></div><div style={styles.grid}><StatCard title="Class Students" value={String(students.filter(s=>s.className===studentData?.className).length)} icon="👨‍🎓"/><StatCard title="Class Attendance" value={`${Math.round((students.filter(s=>s.className===studentData?.className).reduce((a,s)=>a+Number(s.attendance||0),0)/Math.max(1,students.filter(s=>s.className===studentData?.className).length)))}%`} icon="📅"/><StatCard title="Class Homework" value={String(homework.filter(h=>h.className===studentData?.className).length)} icon="📚"/><StatCard title="My Average" value={`${crAverage.toFixed(1)}%`} icon="📊"/></div><TestPerformanceChart points={getStudentTestGraph(studentData)} /><h3 style={{marginBottom:6}}>📊 Class Test Average</h3><TestPerformanceChart points={tests.filter(t=>!studentData?.className || t.className===studentData.className).map(t=>{const vals=Object.entries(t.results||{}).filter(([sid,r]:any)=>r?.present&&r.marks!=null && students.some(s=>s.studentId===sid && s.className===studentData?.className)).map(([sid,r]:any)=>(Number(r.marks)/Number(t.total||1))*100);return {name:t.name||t.subject||"Test",date:t.date||"",percentage:vals.length?Number((vals.reduce((a:number,b:number)=>a+b,0)/vals.length).toFixed(1)):0};}).filter(p=>p.percentage>0).slice(0,12).reverse()} /></div><div style={styles.card}><h2>🛡️ CR Permissions</h2><div style={styles.quickGrid}>
-        <button style={styles.quickAction} onClick={() => setPage("attendance")}><span style={{fontSize:24}}>📅</span><span><strong>Attendance</strong><small style={styles.muted}>Manage your assigned class</small></span></button>
-        <button style={styles.quickAction} onClick={() => setPage("homework")}><span style={{fontSize:24}}>📚</span><span><strong>Homework</strong><small style={styles.muted}>Add and manage class homework</small></span></button>
-      </div><div style={styles.infoNotice}>CR changes to official Attendance/Homework records are sent to Admin for approval. You cannot edit fees, marks, teachers or student accounts.</div></div></>}
+      {isCR && <><div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>🛡️ CR Control Center</h2><p style={styles.muted}>Manage Attendance, Holidays, Homework and Notices across <strong>all classes</strong>, like Admin. Every CR action is recorded in Admin CR History.</p></div></div><div style={styles.grid}><StatCard title="All Students" value={String(students.length)} icon="👨‍🎓"/><StatCard title="All Classes" value={String(new Set(students.map(s=>s.className).filter(Boolean)).size)} icon="🏫"/><StatCard title="All Homework" value={String(homework.length)} icon="📚"/><StatCard title="My Average" value={`${crAverage.toFixed(1)}%`} icon="📊"/></div><TestPerformanceChart points={getStudentTestGraph(studentData)} /><h3 style={{marginBottom:6}}>📊 All-Class Test Average</h3><TestPerformanceChart points={tests.map(t=>{const vals=Object.entries(t.results||{}).filter(([sid,r]:any)=>r?.present&&r.marks!=null && students.some(s=>s.studentId===sid)).map(([sid,r]:any)=>(Number(r.marks)/Number(t.total||1))*100);return {name:t.name||t.subject||"Test",date:t.date||"",percentage:vals.length?Number((vals.reduce((a:number,b:number)=>a+b,0)/vals.length).toFixed(1)):0};}).filter(p=>p.percentage>0).slice(0,12).reverse()} /></div><div style={styles.card}><h2>🛡️ CR Permissions</h2><div style={styles.quickGrid}>
+        <button style={styles.quickAction} onClick={() => setPage("attendance")}><span style={{fontSize:24}}>📅</span><span><strong>Attendance + Holiday</strong><small style={styles.muted}>Manage every class</small></span></button>
+        <button style={styles.quickAction} onClick={() => setPage("homework")}><span style={{fontSize:24}}>📚</span><span><strong>Homework</strong><small style={styles.muted}>All classes, assign students, defaulters</small></span></button>
+        <button style={styles.quickAction} onClick={() => setPage("notices")}><span style={{fontSize:24}}>📢</span><span><strong>Notices</strong><small style={styles.muted}>Add, edit and delete notices</small></span></button>
+      </div><div style={styles.infoNotice}>CR can manage all classes. Every Attendance, Holiday, Homework and Notice action is recorded in Admin CR History. Fees, marks, teachers and student accounts remain Admin-only.</div></div></>}
     </>;
   };
 
@@ -3664,6 +3820,7 @@ export default function App() {
           <div style={styles.formActions}><button type="submit" style={styles.primaryButtonSmall} disabled={savingCrCriteria}>{savingCrCriteria ? "Saving..." : "💾 Save Eligibility Criteria"}</button></div>
         </form>
       </div>
+      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>🧾 CR Activity History</h2><p style={styles.muted}>Every CR attendance, holiday, homework and notice action is recorded here, including edits and deletions.</p></div><button style={styles.secondaryButton} onClick={loadCrActivityHistory} disabled={crActivityLoading}>🔄 Refresh</button></div>{crActivityLoading?<div style={styles.emptyBox}>Loading CR activity...</div>:crActivityHistory.length===0?<div style={styles.emptyBox}>No CR activity recorded yet.</div>:<div className="crActivityList">{crActivityHistory.slice(0,100).map((row:any)=><div key={row.id} className="crActivityItem"><div><strong>{row.performedByName || "CR"}</strong><span className="crActivityPill">{String(row.module||"general").toUpperCase()}</span><span className="crActivityPill">{String(row.action||"action").replace(/_/g," ")}</span><div style={styles.muted}>{row.className || "All Classes"}{row.targetLabel?` · ${row.targetLabel}`:""}</div></div><div className="crActivityTime">{row.createdAt?new Date(row.createdAt).toLocaleString("en-IN"):"—"}</div></div>)}</div>}</div>
       <div style={styles.card}><h2>📌 Eligibility Rules</h2><div style={styles.eligibilityList}><div style={styles.eligibilityRow}><span>1️⃣</span><strong>{`Fee pending ≤ ₹${crCriteria.maxFeeDue}`}</strong><small>Configured by Admin</small></div><div style={styles.eligibilityRow}><span>2️⃣</span><strong>{`Attendance > ${crCriteria.minAttendance}%`}</strong><small>Configured by Admin</small></div><div style={styles.eligibilityRow}><span>3️⃣</span><strong>{`Rank 1–${crCriteria.maxRank}`}</strong><small>Overall ranking</small></div><div style={styles.eligibilityRow}><span>4️⃣</span><strong>{`Average > ${crCriteria.minAverage}%`}</strong><small>Configured by Admin</small></div><div style={styles.eligibilityRow}><span>5️⃣</span><strong>No pending homework</strong><small>Configured by Admin</small></div></div></div>
     </>;
   };
@@ -3672,13 +3829,13 @@ export default function App() {
      HOMEWORK PAGE
   ========================================================= */
 
-  const homeworkPage = () => {
-    const homeworkRoster = (students.length ? students : directoryStudents).filter(student => !isCR || student.className === studentData?.className);
+  function homeworkPage() {
+    const homeworkRoster = (students.length ? students : directoryStudents);
     const classOptions = Array.from(new Set(homeworkRoster.map((student) => student.className).filter(Boolean))) as string[];
     const batchOptions = Array.from(new Set(homeworkRoster.map((student) => student.batch).filter(Boolean))) as string[];
-    const visibleClasses = isCR ? classOptions.filter(c => c === studentData?.className) : classOptions;
+    const visibleClasses = classOptions;
     const effectiveClass = homeworkSelectedClass === "ALL" || !visibleClasses.includes(homeworkSelectedClass) ? "ALL" : homeworkSelectedClass;
-    const visibleHomework = homework.filter(item => effectiveClass === "ALL" ? (isCR ? item.className === studentData?.className || !item.className : true) : (item.className === effectiveClass || !item.className));
+    const visibleHomework = homework.filter(item => effectiveClass === "ALL" ? true : (item.className === effectiveClass || !item.className));
     const rosterForDefaulters = homeworkRoster.filter(s => s.studentId && (effectiveClass === "ALL" || s.className === effectiveClass));
     const defaulterRows = rosterForDefaulters.map(student => ({
       student,
@@ -3698,7 +3855,7 @@ export default function App() {
           <button className={homeworkView === "defaulters" ? "homeworkTab active" : "homeworkTab"} onClick={()=>setHomeworkView("defaulters")}>⚠ Homework Defaulters <span className="tabCount">{defaulterRows.length}</span></button>
         </div>
         <div className="homeworkClassTabs">
-          {!isCR && <button className={effectiveClass === "ALL" ? "homeworkClassTab active" : "homeworkClassTab"} onClick={()=>setHomeworkSelectedClass("ALL")}>All Classes</button>}
+          <button className={effectiveClass === "ALL" ? "homeworkClassTab active" : "homeworkClassTab"} onClick={()=>setHomeworkSelectedClass("ALL")}>All Classes</button>
           {visibleClasses.map(c=><button key={c} className={effectiveClass===c?"homeworkClassTab active":"homeworkClassTab"} onClick={()=>setHomeworkSelectedClass(c)}>{c}</button>)}
         </div>
       </div>
@@ -3715,18 +3872,18 @@ export default function App() {
             <div style={styles.homeworkMeta}><strong>{item.className || "All classes"}{item.batch?` · ${item.batch}`:" · All batches"}</strong><span>{item.day || ""}, {item.homeworkDate || ""}{item.dueDate?` · Due ${item.dueDate}`:""}</span></div>
             <h3 style={{margin:"8px 0 4px"}}>{item.subject?`${item.subject}: `:""}{item.title}</h3><p style={{margin:"0 0 8px",whiteSpace:"pre-wrap"}}>{item.description}</p>
             <div className="homeworkAssignSummary"><strong>{roster.length}</strong> assigned · <strong>{homeworkDefaulters(item).length}</strong> defaulter(s)</div>
-            <div style={styles.defaulterList}>{roster.map(s=>{const done=Boolean(completion[s.studentId!]);return <button key={s.studentId} type="button" style={done?styles.doneStudentButton:styles.notDoneStudentButton} onClick={async()=>{if(!item.id)return;const next={...completion,[s.studentId!]:!done};try{await updateHomework(item.id,{...(item as any),completion:next});await loadHomework();}catch(error:any){setHomeworkMessage(`Unable to update completion: ${error?.message||"Unknown error"}`);}}}>{done?"✓":"○"} {s.name}</button>})}</div>
+            <div style={styles.defaulterList}>{roster.map(s=>{const done=Boolean(completion[s.studentId!]);return <button key={s.studentId} type="button" style={done?styles.doneStudentButton:styles.notDoneStudentButton} onClick={()=>toggleHomeworkCompletion(item,s.studentId!)}>{done?"✓":"○"} {s.name}</button>})}</div>
             <div style={styles.formActions}><button style={styles.editButton} onClick={()=>openEditHomework(item)}>✏️ Edit</button><button style={styles.deleteButton} onClick={()=>removeHomework(item)}>🗑️ Delete</button></div>
           </div>;
         })}</div>}
-        {isAdmin && <div className="bulkHomeworkCallout"><div><strong>📣 Same Homework to Every Class</strong><p>Use one form and create the same assignment for each active class in one click.</p></div><button style={styles.primaryButtonSmall} onClick={()=>{openAddHomeworkForClass();setHomeworkAllClasses(true);}}>➕ All Classes</button></div>}
+        {(isAdmin || isCR) && <div className="bulkHomeworkCallout"><div><strong>📣 Same Homework to Every Class</strong><p>Use one form and create the same assignment for each active class in one click.</p></div><button style={styles.primaryButtonSmall} onClick={()=>{openAddHomeworkForClass();setHomeworkAllClasses(true);}}>➕ All Classes</button></div>}
       </div>}
 
       {showHomeworkForm && <div style={styles.card}>
-        <div style={styles.formHeader}><div><h2>{editingHomework ? "✏️ Edit Homework" : homeworkAllClasses ? "📣 Assign Same Homework to All Classes" : "➕ Add Homework"}</h2><p style={styles.muted}>{isCR ? "CR changes go to Admin for approval." : homeworkAllClasses ? "One submission creates the same homework for every active class." : "Select a class and optionally specific students."}</p></div><button style={styles.closeButton} onClick={resetHomeworkForm}>✕</button></div>
+        <div style={styles.formHeader}><div><h2>{editingHomework ? "✏️ Edit Homework" : homeworkAllClasses ? "📣 Assign Same Homework to All Classes" : "➕ Add Homework"}</h2><p style={styles.muted}>{isCR ? "CR can manage every class. Every action is recorded in Admin CR history." : homeworkAllClasses ? "One submission creates the same homework for every active class." : "Select a class and optionally specific students."}</p></div><button style={styles.closeButton} onClick={resetHomeworkForm}>✕</button></div>
         <form onSubmit={saveHomework}>
           <div style={styles.formGrid}>
-            {!editingHomework && isAdmin && <label className="bulkHomeworkToggle"><input type="checkbox" checked={homeworkAllClasses} onChange={e=>{setHomeworkAllClasses(e.target.checked);if(e.target.checked){setHomeworkClass("");setHomeworkBatch("");setHomeworkAssignedStudents([]);}}}/><span><strong>Assign to all classes</strong><small>Creates the same homework for every active class.</small></span></label>}
+            {!editingHomework && (isAdmin || isCR) && <label className="bulkHomeworkToggle"><input type="checkbox" checked={homeworkAllClasses} onChange={e=>{setHomeworkAllClasses(e.target.checked);if(e.target.checked){setHomeworkClass("");setHomeworkBatch("");setHomeworkAssignedStudents([]);}}}/><span><strong>Assign to all classes</strong><small>Creates the same homework for every active class.</small></span></label>}
             {!homeworkAllClasses && <FormField label="Class *" value={homeworkClass} onChange={(v)=>{setHomeworkClass(v);setHomeworkSelectedClass(v || "ALL");}} placeholder="Select class" type="select" options={visibleClasses.map(value=>({label:value,value}))} />}
             <FormField label="Batch" value={homeworkBatch} onChange={setHomeworkBatch} placeholder="All batches" type="select" options={[{label:"All batches",value:""}, ...batchOptions.map(value=>({label:value,value}))]}/>
             <FormField label="Subject" value={homeworkSubject} onChange={setHomeworkSubject} placeholder="Mathematics" required={false}/>
@@ -3736,7 +3893,7 @@ export default function App() {
           </div>
           {!homeworkAllClasses && <><label style={styles.label}>Assign Students</label><div style={styles.studentPicker}><div style={styles.pickerToolbar}><button type="button" style={styles.secondaryButton} onClick={()=>setHomeworkAssignedStudents(homeworkRoster.filter(s=>s.studentId && (!homeworkClass || s.className===homeworkClass) && (!homeworkBatch || s.batch===homeworkBatch)).map(s=>s.studentId!))}>Select all matching</button><button type="button" style={styles.secondaryButton} onClick={()=>setHomeworkAssignedStudents([])}>Clear</button></div><div style={styles.studentPickerGrid}>{homeworkRoster.filter(s=>s.studentId && (!homeworkClass || s.className===homeworkClass) && (!homeworkBatch || s.batch===homeworkBatch)).map(s=><label key={s.studentId} style={styles.studentPickerItem}><input type="checkbox" checked={homeworkAssignedStudents.includes(s.studentId!)} onChange={e=>setHomeworkAssignedStudents(prev=>e.target.checked?[...new Set([...prev,s.studentId!])]:prev.filter(id=>id!==s.studentId))}/><span>{s.name} <small>({s.className}{s.batch?` · ${s.batch}`:""})</small></span></label>)}</div><p style={styles.muted}>Leave all unchecked to assign it to the entire selected class/batch.</p></div></>}
           <label style={styles.label}>Homework / Instructions *</label><textarea style={{...styles.input,minHeight:130,resize:"vertical"}} value={homeworkDescription} onChange={e=>setHomeworkDescription(e.target.value)} placeholder="Write the homework, questions, pages, instructions, etc." required/>
-          <div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={resetHomeworkForm}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingHomework}>{savingHomework?"Saving…":editingHomework?(isCR?"⏳ Send Edit for Approval":"💾 Update Homework"):(isCR?"⏳ Send for Admin Approval":"💾 Add Homework")}</button></div>
+          <div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={resetHomeworkForm}>Cancel</button><button type="submit" style={styles.primaryButtonSmall} disabled={savingHomework}>{savingHomework?"Saving…":editingHomework?"💾 Update Homework":"💾 Add Homework"}</button></div>
         </form>
       </div>}
     </>;
@@ -3952,32 +4109,32 @@ export default function App() {
     </>;
   };
 
-  const attendancePage = () => {
+  function attendancePage() {
     const selected = attendanceDays.find(a => a.date === attendanceDate);
     const historyForStudent = (sid:string) => attendanceDays.filter(d => !d.holiday && d.records?.[sid]).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
     return <>
       <div style={styles.pageHeader}>
-        <div><h1>📅 Attendance</h1><p style={styles.muted}>{isCR ? "Full attendance register. Every change requires Admin approval." : "Daily present/absent register with holidays excluded from attendance percentage."}</p></div>
-        {(isAdmin || isCR)&&<div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button style={styles.secondaryButton} onClick={()=>setAllAttendance("present")}>✓ Mark All Present</button><button style={styles.secondaryButton} onClick={()=>setAllAttendance("absent")}>✕ Mark All Absent</button><button style={attendanceHoliday ? styles.deleteButton : styles.secondaryButton} onClick={()=>setAttendanceHoliday(v=>!v)}>{attendanceHoliday ? "🔴 Holiday Enabled" : "📅 Mark Holiday"}</button><button style={styles.primaryButtonSmall} onClick={saveAttendance}>💾 {isCR ? "Submit for Admin Approval" : "Save Attendance"}</button></div>}
+        <div><h1>📅 Attendance</h1><p style={styles.muted}>{isCR ? "Full attendance register for every class. Every CR action is recorded in Admin history." : "Daily present/absent register with holidays excluded from attendance percentage."}</p></div>
+        {(isAdmin || isCR)&&<div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button style={styles.secondaryButton} onClick={()=>setAllAttendance("present")}>✓ Mark All Present</button><button style={styles.secondaryButton} onClick={()=>setAllAttendance("absent")}>✕ Mark All Absent</button><button style={attendanceHoliday ? styles.deleteButton : styles.secondaryButton} onClick={()=>setAttendanceHoliday(v=>!v)}>{attendanceHoliday ? "🔴 Holiday Enabled" : "📅 Mark Holiday"}</button><button style={styles.primaryButtonSmall} onClick={saveAttendance}>💾 Save Attendance</button></div>}
       </div>
       {attendanceMessage&&<div style={attendanceMessage.includes("saved") || attendanceMessage.includes("success") || attendanceMessage.includes("sent") ? styles.successBox : styles.errorBox}>{attendanceMessage}</div>}
       <div style={styles.card}>
         <div style={styles.formGrid}><FormField label="Attendance Date" value={attendanceDate} onChange={(v)=>{setAttendanceDate(v);const row=attendanceDays.find(a=>a.date===v);setAttendanceHoliday(Boolean(row?.holiday));setAttendanceHolidayNote(row?.holidayNote||"");setAttendanceRecords(row?.records||{});}} type="date"/></div>
         {attendanceHoliday && <div style={styles.holidayBanner}><span className="holidayCircle" aria-hidden="true">!</span><div><strong>Holiday</strong><div>{attendanceHolidayNote || "Holiday note not added yet."}</div></div></div>}
         {attendanceHoliday && <div style={styles.formGrid}><FormField label="Holiday Note / Reason" value={attendanceHolidayNote} onChange={setAttendanceHolidayNote} placeholder="Sunday / Festival / Coaching closed" required={false}/></div>}
-        {!attendanceHoliday && (attendanceLoading?<div style={styles.emptyBox}>Loading attendance...</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Batch</th><th style={styles.th}>Status</th></tr></thead><tbody>{(students.length ? students : directoryStudents).filter(s => !isCR || s.className === studentData?.className).map(s=>s.studentId?<tr key={s.studentId}><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}>{s.batch||"-"}</td><td style={styles.td}><button disabled={false} style={(attendanceRecords[s.studentId]||"absent")==="present"?styles.doneStudentButton:styles.notDoneStudentButton} onClick={()=>setAttendanceRecords(prev=>({...prev,[s.studentId!]:prev[s.studentId!]==="present"?"absent":"present"}))}>{(attendanceRecords[s.studentId]||"absent")==="present"?"✓ Present":"○ Absent"}</button></td></tr>:null)}</tbody></table></div>)}
+        {!attendanceHoliday && (attendanceLoading?<div style={styles.emptyBox}>Loading attendance...</div>:<div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Batch</th><th style={styles.th}>Status</th></tr></thead><tbody>{(students.length ? students : directoryStudents).map(s=>s.studentId?<tr key={s.studentId}><td style={styles.td}>{s.name}</td><td style={styles.td}>{s.className}</td><td style={styles.td}>{s.batch||"-"}</td><td style={styles.td}><button disabled={false} style={(attendanceRecords[s.studentId]||"absent")==="present"?styles.doneStudentButton:styles.notDoneStudentButton} onClick={()=>setAttendanceRecords(prev=>({...prev,[s.studentId!]:prev[s.studentId!]==="present"?"absent":"present"}))}>{(attendanceRecords[s.studentId]||"absent")==="present"?"✓ Present":"○ Absent"}</button></td></tr>:null)}</tbody></table></div>)}
       </div>
       <div style={styles.card}><h2>📊 Attendance Summary</h2><div style={styles.grid}>{(students.length ? students : directoryStudents).map(s=>{if(!s.studentId)return null;const rows=historyForStudent(s.studentId);const present=rows.filter(r=>r.records?.[s.studentId]==="present").length;const pct=rows.length?present/rows.length*100:0;return <div key={s.studentId} style={styles.summaryMiniCard}><strong>{s.name}</strong><span>{s.className}</span><b>{pct.toFixed(0)}%</b><small>{present}/{rows.length} working attendance days</small></div>})}</div></div>
       {selected?.holiday && <div style={styles.card}><div style={styles.holidayBanner}><span className="holidayCircle">!</span><div><strong>{selected.date}: Holiday</strong><div>{selected.holidayNote || "No note"}</div></div></div></div>}
     </>;
   };
 
-  const noticesPage = () => <>
-    <div style={styles.pageHeader}><div><h1>📢 Notice Board</h1><p style={styles.muted}>Publish clear, dated announcements for every student.</p></div></div>
-    {noticeStatus&&<div style={noticeStatus.includes("successfully")?styles.successBox:styles.errorBox}>{noticeStatus}</div>}
-    {isAdmin&&<div style={styles.card}><h2>➕ Publish Notice</h2><form onSubmit={saveNotice}><div style={styles.formGrid}><FormField label="Title *" value={noticeTitle} onChange={setNoticeTitle} placeholder="Holiday Notice"/><FormField label="Date" value={noticeDate} onChange={setNoticeDate} type="date"/><FormField label="Priority" value={noticePriority} onChange={v=>setNoticePriority(v as any)} type="select" options={[{label:"Normal",value:"normal"},{label:"Important",value:"important"},{label:"Urgent",value:"urgent"}]}/></div><label style={styles.label}>Message *</label><textarea style={{...styles.input,minHeight:120,resize:"vertical"}} value={noticeMessage} onChange={e=>setNoticeMessage(e.target.value)} placeholder="Write the announcement..." required/><div style={styles.formActions}><button type="submit" style={styles.primaryButtonSmall} disabled={noticeSaving}>{noticeSaving?"Publishing...":"📢 Publish Notice"}</button></div></form></div>}
-    <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📌 Published Notices</h2><p style={styles.muted}>{notices.length} notice{notices.length===1?"":"s"}</p></div></div>{notices.length===0?<div style={styles.emptyBox}>No notices published yet.</div>:notices.map(n=><div key={n.id} style={styles.noticeItem}><div style={styles.homeworkMeta}><strong>{n.title}</strong><span>{n.date}</span></div><span style={styles.noticeBadge}>{(n.priority||"normal").toUpperCase()}</span><p style={{whiteSpace:"pre-wrap",margin:"10px 0 0"}}>{n.message}</p>{isAdmin&&<div style={styles.formActions}><button style={styles.deleteButton} onClick={()=>deleteNotice(n)}>🗑️ Delete</button></div>}</div>)}</div>
-  </>;
+  function noticesPage() { return <>
+    <div style={styles.pageHeader}><div><h1>📢 Notice Board</h1><p style={styles.muted}>{isCR ? "CR can publish and manage notices for all classes. Every CR action is recorded in Admin history." : "Publish clear, dated announcements for every student."}</p></div></div>
+    {noticeStatus&&<div style={noticeStatus.includes("successfully") || noticeStatus.includes("recorded") ? styles.successBox:styles.errorBox}>{noticeStatus}</div>}
+    {(isAdmin || isCR)&&<div style={styles.card}><h2>{editingNotice ? "✏️ Edit Notice" : "➕ Publish Notice"}</h2><form onSubmit={saveNotice}><div style={styles.formGrid}><FormField label="Title *" value={noticeTitle} onChange={setNoticeTitle} placeholder="Holiday Notice"/><FormField label="Date" value={noticeDate} onChange={setNoticeDate} type="date"/><FormField label="Priority" value={noticePriority} onChange={v=>setNoticePriority(v as any)} type="select" options={[{label:"Normal",value:"normal"},{label:"Important",value:"important"},{label:"Urgent",value:"urgent"}]}/></div><label style={styles.label}>Message *</label><textarea style={{...styles.input,minHeight:120,resize:"vertical"}} value={noticeMessage} onChange={e=>setNoticeMessage(e.target.value)} placeholder="Write the announcement..." required/><div style={styles.formActions}><button type="button" style={styles.secondaryButton} onClick={resetNoticeForm}>Clear</button><button type="submit" style={styles.primaryButtonSmall} disabled={noticeSaving}>{noticeSaving?"Saving...":editingNotice?"💾 Update Notice":"📢 Publish Notice"}</button></div></form></div>}
+    <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>📌 Published Notices</h2><p style={styles.muted}>{notices.length} notice{notices.length===1?"":"s"}</p></div></div>{notices.length===0?<div style={styles.emptyBox}>No notices published yet.</div>:notices.map(n=><div key={n.id} style={styles.noticeItem}><div style={styles.homeworkMeta}><strong>{n.title}</strong><span>{n.date}</span></div><span style={styles.noticeBadge}>{(n.priority||"normal").toUpperCase()}</span><p style={{whiteSpace:"pre-wrap",margin:"10px 0 0"}}>{n.message}</p>{(isAdmin || isCR)&&<div style={styles.formActions}><button style={styles.editButton} onClick={()=>openEditNotice(n)}>✏️ Edit</button><button style={styles.deleteButton} onClick={()=>deleteNotice(n)}>🗑️ Delete</button></div>}</div>)}</div>
+  </>; }
 
   const loginHistoryPage = () => {
     const studentsWithHistory = students.filter((student) => student.studentId);

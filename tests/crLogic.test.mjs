@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getCrEligibility } from '../src/crLogic.js';
+import { getCrEligibility, buildCrActivityEntry } from '../src/crLogic.js';
 
 test('student is CR eligible only when every criterion is satisfied', () => {
   const result = getCrEligibility({
@@ -43,4 +43,25 @@ test('future-due homework is not counted as pending, but due incomplete work is'
   assert.equal(isHomeworkPending({ dueDate: '2026-09-20', completion: { S1: false } }, 'S1', '2026-09-18'), false);
   assert.equal(isHomeworkPending({ dueDate: '2026-09-18', completion: { S1: false } }, 'S1', '2026-09-18'), true);
   assert.equal(isHomeworkPending({ dueDate: '2026-09-18', completion: { S1: true } }, 'S1', '2026-09-18'), false);
+});
+
+
+test('CR activity history captures who, what, and all-class scope', () => {
+  const entry = buildCrActivityEntry({
+    action: 'edited',
+    module: 'homework',
+    performedByUid: 'CR_UID',
+    performedByName: 'Rahul',
+    crStudentId: 'S1',
+    targetId: 'HW1',
+    targetLabel: 'Math Exercise',
+    className: 'All Classes',
+    before: { title: 'Old' },
+    after: { title: 'New' },
+  });
+  assert.equal(entry.performedByUid, 'CR_UID');
+  assert.equal(entry.crStudentId, 'S1');
+  assert.equal(entry.className, 'All Classes');
+  assert.deepEqual(entry.before, { title: 'Old' });
+  assert.deepEqual(entry.after, { title: 'New' });
 });
