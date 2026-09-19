@@ -11,3 +11,9 @@ Added:
 Validation:
 - All existing Node test files passed, including the new attendanceOverview.test.mjs.
 - Production build was not run because the ZIP does not include node_modules and Vite was unavailable in the workspace.
+
+CR HISTORY VISIBILITY FIX
+- Admin now has a dedicated sidebar item: CR Activity History.
+- Admin CR page has a top-level CR History view and an Open CR History button.
+- History shows who acted, module, action, class, target, CR ID, time, and before/after payloads when available.
+- CR history remains separate from the CR user's personal history.

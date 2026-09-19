@@ -220,3 +220,7 @@ radial-gradient(circle at 90% 20%,rgba(14,165,233,.08),transparent 24%),#f6f8fc}
 .holidayList{display:flex;flex-direction:column;gap:9px}.holidayListItem{display:flex;align-items:center;gap:11px;border:1px solid #fecaca;background:#fff7f7;border-radius:13px;padding:11px 13px}.holidayListItem>div{display:flex;flex-direction:column;gap:2px}.holidayListItem span{font-size:12px;color:#7f1d1d}.holidayListItem small{color:#991b1b}
 @media (max-width:900px){.attendanceSummaryGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.attendanceStudentGrid{grid-template-columns:1fr}}
 @media (max-width:520px){.attendanceSummaryGrid{grid-template-columns:1fr}.attendanceSummaryCard strong{font-size:24px}.attendanceStudentMetrics{grid-template-columns:repeat(2,1fr)}}
+
+/* CR audit history details */
+.crActivityChangeBox{margin-top:8px;padding:8px 10px;border:1px solid rgba(127,127,127,.18);border-radius:10px;background:rgba(127,127,127,.05);font-size:12px;overflow-wrap:anywhere}
+.crActivityChangeBox div+div{margin-top:4px}

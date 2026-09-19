@@ -360,6 +360,7 @@ export default function App() {
   const [homeworkSelectedClass, setHomeworkSelectedClass] = useState("ALL");
   const [homeworkAllClasses, setHomeworkAllClasses] = useState(false);
   const [crControlTab, setCrControlTab] = useState<"overview" | "attendance" | "homework" | "notices" | "history">("overview");
+  const [adminCrView, setAdminCrView] = useState<"overview" | "history">("overview");
 
   /* =========================================================
      TESTS & RESULTS
@@ -1912,6 +1913,7 @@ export default function App() {
     if (page === "homework" && (isAdmin || isCR)) loadHomework();
     if ((page === "homework" || page === "attendance" || page === "cr") && (isAdmin || isCR)) loadCrRequests();
     if (page === "cr" && (isAdmin || isCR)) loadCrActivityHistory();
+    if (page === "crHistory" && isAdmin) { setAdminCrView("history"); loadCrActivityHistory(); }
   }, [page, isAdmin, isCR, profile?.studentId]);
 
   /* =========================================================
@@ -3801,27 +3803,62 @@ export default function App() {
     const ranking = getStudentRanking();
     const pendingRequests = crRequests.filter((r: any) => r.status === "pending");
     return <>
-      <div style={styles.pageHeader}><div><h1>⭐ Class Representative</h1><p style={styles.muted}>Track eligibility, applications and Admin assignments.</p></div></div>
-      {crMessage&&<div style={crMessage.includes("successfully")||crMessage.includes("now") ? styles.successBox : styles.errorBox}>{crMessage}</div>}
-      <div style={styles.grid}><StatCard title="Current CRs" value={String(students.filter(s=>s.isCR).length)} icon="⭐"/><StatCard title="Eligible" value={String(students.filter(s=>getStudentCrEligibility(s).eligible).length)} icon="✅"/><StatCard title="Applications" value={String(pendingRequests.filter((r:any)=>r.type==="cr_application").length)} icon="📨"/><StatCard title="Approval Requests" value={String(pendingRequests.filter((r:any)=>r.type!=="cr_application").length)} icon="⏳"/></div>
-      <div style={styles.card}><h2>📨 Pending CR Requests</h2>{pendingRequests.length===0?<div style={styles.emptyBox}>No pending CR requests.</div>:pendingRequests.map((r:any)=><div key={r.id} style={styles.requestCard}><div><strong>{r.type.replaceAll("_"," ").toUpperCase()}</strong><p style={{margin:"5px 0"}}>{r.submittedByName || r.studentId || "CR"}{r.targetId ? ` · ${r.targetId}` : ""}</p><small style={styles.muted}>{new Date(r.createdAt || Date.now()).toLocaleString("en-IN")}</small></div><div style={styles.formActions}><button style={styles.primaryButtonSmall} disabled={crLoading} onClick={()=>reviewCrRequest(r,true)}>✅ Approve</button><button style={styles.deleteButton} disabled={crLoading} onClick={()=>reviewCrRequest(r,false)}>✕ Reject</button></div></div>)}</div>
-      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>👑 CR Management</h2><p style={styles.muted}>All students are evaluated against all five criteria. Admin can assign anyone directly.</p></div></div><div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Fee</th><th style={styles.th}>Attendance</th><th style={styles.th}>Rank</th><th style={styles.th}>Average</th><th style={styles.th}>Homework</th><th style={styles.th}>Eligibility</th><th style={styles.th}>CR</th><th style={styles.th}>Action</th></tr></thead><tbody>{students.map(s=>{const m=getStudentCrMetrics(s);const e=getStudentCrEligibility(s);return <tr key={s.studentId}><td style={styles.td}><button style={styles.textButton} onClick={()=>openStudentDetails(s)}>{s.name}</button></td><td style={styles.td}>{s.className}{s.batch?` · ${s.batch}`:""}</td><td style={styles.td}>{m.feeDue===0?"✅ Clear":`₹${m.feeDue}`}</td><td style={styles.td}>{m.attendance.toFixed(0)}%</td><td style={styles.td}>{Number.isFinite(m.rank)?`#${m.rank}`:"—"}</td><td style={styles.td}>{m.average.toFixed(1)}%</td><td style={styles.td}>{m.pendingHomework===0?"✅ Done":`❌ ${m.pendingHomework} pending`}</td><td style={styles.td}><span style={e.eligible?styles.paidBadge:styles.pendingBadge}>{e.eligible?"ELIGIBLE":"NOT ELIGIBLE"}</span></td><td style={styles.td}>{s.isCR?<span style={styles.paidBadge}>⭐ CR</span>:"—"}</td><td style={styles.td}>{s.isCR?<button style={styles.deleteButton} onClick={()=>removeCr(s)}>Remove</button>:<button style={styles.primaryButtonSmall} onClick={()=>assignCrDirectly(s)}>⭐ Make CR</button>}</td></tr>})}</tbody></table></div></div>
-      <div style={styles.card}>
-        <div className="sectionTitleRow" style={styles.sectionTitleRow}><div><h2>⚙️ CR Eligibility Settings</h2><p style={styles.muted}>Admin can change the requirements used for student CR applications.</p></div></div>
-        {crCriteriaMessage && <div style={crCriteriaMessage.includes("successfully") ? styles.successBox : styles.errorBox}>{crCriteriaMessage}</div>}
-        <form onSubmit={saveCrCriteria}>
-          <div style={styles.formGrid}>
-            <FormField label="Minimum Attendance (strictly above) %" value={String(crCriteriaDraft.minAttendance)} onChange={v => setCrCriteriaDraft(prev => ({ ...prev, minAttendance: Number(v) }))} type="number" />
-            <FormField label="Minimum Average (strictly above) %" value={String(crCriteriaDraft.minAverage)} onChange={v => setCrCriteriaDraft(prev => ({ ...prev, minAverage: Number(v) }))} type="number" />
-            <FormField label="Maximum Eligible Rank" value={String(crCriteriaDraft.maxRank)} onChange={v => setCrCriteriaDraft(prev => ({ ...prev, maxRank: Number(v) }))} type="number" />
-            <FormField label="Maximum Pending Fee ₹" value={String(crCriteriaDraft.maxFeeDue)} onChange={v => setCrCriteriaDraft(prev => ({ ...prev, maxFeeDue: Number(v) }))} type="number" />
-            <FormField label="Maximum Pending Homework" value={String(crCriteriaDraft.maxPendingHomework)} onChange={v => setCrCriteriaDraft(prev => ({ ...prev, maxPendingHomework: Number(v) }))} type="number" />
-          </div>
-          <div style={styles.formActions}><button type="submit" style={styles.primaryButtonSmall} disabled={savingCrCriteria}>{savingCrCriteria ? "Saving..." : "💾 Save Eligibility Criteria"}</button></div>
-        </form>
+      <div style={styles.pageHeader}>
+        <div><h1>⭐ Class Representative</h1><p style={styles.muted}>Track eligibility, applications, Admin assignments and the complete CR activity audit.</p></div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <button style={adminCrView === "overview" ? styles.primaryButtonSmall : styles.secondaryButton} onClick={() => setAdminCrView("overview")}>⭐ CR Management</button>
+          <button style={adminCrView === "history" ? styles.primaryButtonSmall : styles.secondaryButton} onClick={() => { setAdminCrView("history"); loadCrActivityHistory(); }}>🧾 CR History</button>
+        </div>
       </div>
-      <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>🧾 CR Activity History</h2><p style={styles.muted}>Every CR attendance, holiday, homework and notice action is recorded here, including edits and deletions.</p></div><button style={styles.secondaryButton} onClick={loadCrActivityHistory} disabled={crActivityLoading}>🔄 Refresh</button></div>{crActivityLoading?<div style={styles.emptyBox}>Loading CR activity...</div>:crActivityHistory.length===0?<div style={styles.emptyBox}>No CR activity recorded yet.</div>:<div className="crActivityList">{crActivityHistory.slice(0,100).map((row:any)=><div key={row.id} className="crActivityItem"><div><strong>{row.performedByName || "CR"}</strong><span className="crActivityPill">{String(row.module||"general").toUpperCase()}</span><span className="crActivityPill">{String(row.action||"action").replace(/_/g," ")}</span><div style={styles.muted}>{row.className || "All Classes"}{row.targetLabel?` · ${row.targetLabel}`:""}</div></div><div className="crActivityTime">{row.createdAt?new Date(row.createdAt).toLocaleString("en-IN"):"—"}</div></div>)}</div>}</div>
-      <div style={styles.card}><h2>📌 Eligibility Rules</h2><div style={styles.eligibilityList}><div style={styles.eligibilityRow}><span>1️⃣</span><strong>{`Fee pending ≤ ₹${crCriteria.maxFeeDue}`}</strong><small>Configured by Admin</small></div><div style={styles.eligibilityRow}><span>2️⃣</span><strong>{`Attendance > ${crCriteria.minAttendance}%`}</strong><small>Configured by Admin</small></div><div style={styles.eligibilityRow}><span>3️⃣</span><strong>{`Rank 1–${crCriteria.maxRank}`}</strong><small>Overall ranking</small></div><div style={styles.eligibilityRow}><span>4️⃣</span><strong>{`Average > ${crCriteria.minAverage}%`}</strong><small>Configured by Admin</small></div><div style={styles.eligibilityRow}><span>5️⃣</span><strong>No pending homework</strong><small>Configured by Admin</small></div></div></div>
+
+      {adminCrView === "history" ? <>
+        <div style={styles.grid}>
+          <StatCard title="CR Actions" value={String(crActivityHistory.length)} icon="🧾" />
+          <StatCard title="Latest Action" value={crActivityHistory[0]?.action ? String(crActivityHistory[0].action).replace(/_/g," ") : "—"} icon="🕒" />
+          <StatCard title="CRs With Activity" value={String(new Set(crActivityHistory.map((row:any) => row.performedByUid).filter(Boolean)).size)} icon="⭐" />
+          <StatCard title="Classes Touched" value={String(new Set(crActivityHistory.map((row:any) => row.className || "All Classes")).size)} icon="🏫" />
+        </div>
+        <div style={styles.card}>
+          <div style={styles.sectionTitleRow}>
+            <div><h2>🧾 CR Activity History</h2><p style={styles.muted}>Every CR attendance, holiday, homework and notice action is recorded here. Admin can see who did it, what changed, which class was affected and when.</p></div>
+            <button style={styles.secondaryButton} onClick={loadCrActivityHistory} disabled={crActivityLoading}>🔄 Refresh</button>
+          </div>
+          {crActivityLoading ? <div style={styles.emptyBox}>Loading CR history...</div> : crActivityHistory.length === 0 ? <div style={styles.emptyBox}>No CR activity has been recorded yet. Once a CR performs an action, it will appear here.</div> : <div className="crActivityList">
+            {crActivityHistory.slice(0, 250).map((row:any) => <div key={row.id} className="crActivityItem">
+              <div>
+                <strong>{row.performedByName || "CR"}</strong>
+                <span className="crActivityPill">{String(row.module || "general").toUpperCase()}</span>
+                <span className="crActivityPill">{String(row.action || "action").replace(/_/g," ")}</span>
+                <div style={styles.muted}>{row.className || "All Classes"}{row.targetLabel ? ` · ${row.targetLabel}` : ""}{row.crStudentId ? ` · CR ID: ${row.crStudentId}` : ""}</div>
+                {row.details && <div style={{marginTop:6,fontSize:13}}>{typeof row.details === "string" ? row.details : JSON.stringify(row.details)}</div>}
+                {(row.before || row.after) && <div className="crActivityChangeBox"><div><strong>Before:</strong> {row.before ? JSON.stringify(row.before) : "—"}</div><div><strong>After:</strong> {row.after ? JSON.stringify(row.after) : "—"}</div></div>}
+              </div>
+              <div className="crActivityTime">{row.createdAt ? new Date(row.createdAt).toLocaleString("en-IN") : "—"}</div>
+            </div>)}
+          </div>}
+        </div>
+        <div style={styles.infoNotice}>This history is Admin-only. It remains separate from the CR's personal history and is the audit record for all CR actions.</div>
+      </> : <>
+        {crMessage&&<div style={crMessage.includes("successfully")||crMessage.includes("now") ? styles.successBox : styles.errorBox}>{crMessage}</div>}
+        <div style={styles.grid}><StatCard title="Current CRs" value={String(students.filter(s=>s.isCR).length)} icon="⭐"/><StatCard title="Eligible" value={String(students.filter(s=>getStudentCrEligibility(s).eligible).length)} icon="✅"/><StatCard title="Applications" value={String(pendingRequests.filter((r:any)=>r.type==="cr_application").length)} icon="📨"/><StatCard title="CR Actions Logged" value={String(crActivityHistory.length)} icon="🧾"/></div>
+        <div style={styles.card}><h2>📨 Pending CR Requests</h2>{pendingRequests.length===0?<div style={styles.emptyBox}>No pending CR requests.</div>:pendingRequests.map((r:any)=><div key={r.id} style={styles.requestCard}><div><strong>{r.type.replaceAll("_"," ").toUpperCase()}</strong><p style={{margin:"5px 0"}}>{r.submittedByName || r.studentId || "CR"}{r.targetId ? ` · ${r.targetId}` : ""}</p><small style={styles.muted}>{new Date(r.createdAt || Date.now()).toLocaleString("en-IN")}</small></div><div style={styles.formActions}><button style={styles.primaryButtonSmall} disabled={crLoading} onClick={()=>reviewCrRequest(r,true)}>✅ Approve</button><button style={styles.deleteButton} disabled={crLoading} onClick={()=>reviewCrRequest(r,false)}>✕ Reject</button></div></div>)}</div>
+        <div style={styles.card}><div style={styles.sectionTitleRow}><div><h2>👑 CR Management</h2><p style={styles.muted}>All students are evaluated against all five criteria. Admin can assign anyone directly.</p></div><button style={styles.secondaryButton} onClick={() => { setAdminCrView("history"); loadCrActivityHistory(); }}>🧾 Open CR History</button></div><div style={styles.tableWrapper}><table style={styles.table}><thead><tr><th style={styles.th}>Student</th><th style={styles.th}>Class</th><th style={styles.th}>Fee</th><th style={styles.th}>Attendance</th><th style={styles.th}>Rank</th><th style={styles.th}>Average</th><th style={styles.th}>Homework</th><th style={styles.th}>Eligibility</th><th style={styles.th}>CR</th><th style={styles.th}>Action</th></tr></thead><tbody>{students.map(s=>{const m=getStudentCrMetrics(s);const e=getStudentCrEligibility(s);return <tr key={s.studentId}><td style={styles.td}><button style={styles.textButton} onClick={()=>openStudentDetails(s)}>{s.name}</button></td><td style={styles.td}>{s.className}{s.batch?` · ${s.batch}`:""}</td><td style={styles.td}>{m.feeDue===0?"✅ Clear":`₹${m.feeDue}`}</td><td style={styles.td}>{m.attendance.toFixed(0)}%</td><td style={styles.td}>{Number.isFinite(m.rank)?`#${m.rank}`:"—"}</td><td style={styles.td}>{m.average.toFixed(1)}%</td><td style={styles.td}>{m.pendingHomework===0?"✅ Done":`❌ ${m.pendingHomework} pending`}</td><td style={styles.td}><span style={e.eligible?styles.paidBadge:styles.pendingBadge}>{e.eligible?"ELIGIBLE":"NOT ELIGIBLE"}</span></td><td style={styles.td}>{s.isCR?<span style={styles.paidBadge}>⭐ CR</span>:"—"}</td><td style={styles.td}>{s.isCR?<button style={styles.deleteButton} onClick={()=>removeCr(s)}>Remove</button>:<button style={styles.primaryButtonSmall} onClick={()=>assignCrDirectly(s)}>⭐ Make CR</button>}</td></tr>})}</tbody></table></div></div>
+        <div style={styles.card}>
+          <div className="sectionTitleRow" style={styles.sectionTitleRow}><div><h2>⚙️ CR Eligibility Settings</h2><p style={styles.muted}>Admin can change the requirements used for student CR applications.</p></div></div>
+          {crCriteriaMessage && <div style={crCriteriaMessage.includes("successfully") ? styles.successBox : styles.errorBox}>{crCriteriaMessage}</div>}
+          <form onSubmit={saveCrCriteria}>
+            <div style={styles.formGrid}>
+              <FormField label="Minimum Attendance (strictly above) %" value={String(crCriteriaDraft.minAttendance)} onChange={v => setCrCriteriaDraft(prev => ({ ...prev, minAttendance: Number(v) }))} type="number" />
+              <FormField label="Minimum Average (strictly above) %" value={String(crCriteriaDraft.minAverage)} onChange={v => setCrCriteriaDraft(prev => ({ ...prev, minAverage: Number(v) }))} type="number" />
+              <FormField label="Maximum Eligible Rank" value={String(crCriteriaDraft.maxRank)} onChange={v => setCrCriteriaDraft(prev => ({ ...prev, maxRank: Number(v) }))} type="number" />
+              <FormField label="Maximum Pending Fee ₹" value={String(crCriteriaDraft.maxFeeDue)} onChange={v => setCrCriteriaDraft(prev => ({ ...prev, maxFeeDue: Number(v) }))} type="number" />
+              <FormField label="Maximum Pending Homework" value={String(crCriteriaDraft.maxPendingHomework)} onChange={v => setCrCriteriaDraft(prev => ({ ...prev, maxPendingHomework: Number(v) }))} type="number" />
+            </div>
+            <div style={styles.formActions}><button type="submit" style={styles.primaryButtonSmall} disabled={savingCrCriteria}>{savingCrCriteria ? "Saving..." : "💾 Save Eligibility Criteria"}</button></div>
+          </form>
+        </div>
+        <div style={styles.card}><h2>📌 Eligibility Rules</h2><div style={styles.eligibilityList}><div style={styles.eligibilityRow}><span>1️⃣</span><strong>{`Fee pending ≤ ₹${crCriteria.maxFeeDue}`}</strong><small>Configured by Admin</small></div><div style={styles.eligibilityRow}><span>2️⃣</span><strong>{`Attendance > ${crCriteria.minAttendance}%`}</strong><small>Configured by Admin</small></div><div style={styles.eligibilityRow}><span>3️⃣</span><strong>{`Rank 1–${crCriteria.maxRank}`}</strong><small>Overall ranking</small></div><div style={styles.eligibilityRow}><span>4️⃣</span><strong>{`Average > ${crCriteria.minAverage}%`}</strong><small>Configured by Admin</small></div><div style={styles.eligibilityRow}><span>5️⃣</span><strong>No pending homework</strong><small>Configured by Admin</small></div></div></div>
+      </>}
     </>;
   };
 
@@ -4340,10 +4377,12 @@ export default function App() {
 
           <button
             style={page === "cr" ? styles.navButtonActive : styles.navButton}
-            onClick={() => setPage("cr")}
+            onClick={() => { setPage("cr"); if (isAdmin) { setAdminCrView("overview"); loadCrActivityHistory(); } }}
           >
             ⭐ Class Representative
           </button>
+
+          {isAdmin && <button style={page === "crHistory" ? styles.navButtonActive : styles.navButton} onClick={() => { setPage("crHistory"); loadCrActivityHistory(); }}>🧾 CR Activity History</button>}
 
           {isAdmin && <button style={page === "families" ? styles.navButtonActive : styles.navButton} onClick={() => { setPage("families"); loadFamilyAccounts(); }}>👨‍👩‍👧 Family Accounts</button>}
 
@@ -4413,6 +4452,8 @@ export default function App() {
           {page === "homework" && (isAdmin || isCR) && homeworkPage()}
 
           {page === "cr" && (isAdmin ? crAdminPage() : crPublicPage())}
+
+          {page === "crHistory" && isAdmin && crAdminPage()}
 
           {page === "families" && isAdmin && familyAccountsPage()}
 
